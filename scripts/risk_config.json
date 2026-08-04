@@ -1,0 +1,8 @@
+{
+  "account_equity": 950,
+  "risk_per_trade_dollars": 100,
+  "reward_target_dollars": 200,
+  "max_trades_per_trading_day": 1,
+  "alternate_day_cadence": true,
+  "notes": "Testing phase. Plan: add $1000 later (total $2000), then raise risk_per_trade_dollars and trade with roughly $1000/day, alternating which half of the account is active so funds stay settled."
+}
