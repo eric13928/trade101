@@ -23,6 +23,10 @@ for any legitimate pattern read:
   - Key levels: price above today's pre-market high (and the opening-range
     high, once the first 15 minutes have passed) -- standard day-trading
     reference points our own pole/flag logic doesn't otherwise know about
+  - Volume profile: no disproportionately heavy volume-at-price "wall" sitting
+    just above current price -- a High Volume Node close overhead means real
+    prior supply likely to reject the breakout, a different signal from RVOL
+    (which is time-based -- "is trading active right now" -- not price-based)
   - Money flow: buy pressure via get_capital_flow (flow_confirm.py)
 
 A candidate only counts as CONFIRMED if the structure AND every confirmation
@@ -57,6 +61,9 @@ BOLL_PERIOD = 20
 BOLL_STDDEV_MULT = 2.0
 BOLL_SQUEEZE_LOOKBACK = 30    # window to judge whether current bandwidth is unusually narrow
 BOLL_SQUEEZE_PERCENTILE = 25  # bandwidth must be in the narrowest 25% of the lookback to count as a squeeze
+VOLUME_PROFILE_BINS = 20
+OVERHEAD_ZONE_PCT = 2.0    # check for a volume "wall" within this % above current price
+OVERHEAD_HVN_MULT = 1.5    # a bin counts as a wall if its volume exceeds this multiple of the average bin
 # MACD/RSI/Bollinger-squeeze-lookback need real warm-up to be meaningful, not
 # just the bare minimum bars -- pull extra history for these, structure/volume
 # checks still just look at the tail end of the same fetch.
@@ -165,6 +172,66 @@ def compute_bollinger_squeeze_breakout(closes, period=BOLL_PERIOD, stddev_mult=B
     }
 
 
+def compute_volume_profile(bars, num_bins=VOLUME_PROFILE_BINS):
+    """Approximate volume-at-price profile from OHLCV bars -- each bar's
+    volume spread evenly across the price bins it spans. NOT true tick-level
+    volume profile (that needs individual trade prices, which we don't pull),
+    but a standard, reasonable approximation when tick data isn't available.
+    Also limited to whatever lookback window `bars` covers (roughly the last
+    1-2 hours of 1-min bars), not a full session or multi-day profile."""
+    price_min = float(bars["low"].min())
+    price_max = float(bars["high"].max())
+    if price_max <= price_min:
+        return None
+    bin_edges = [price_min + i * (price_max - price_min) / num_bins for i in range(num_bins + 1)]
+    bin_volume = [0.0] * num_bins
+
+    def bin_index(price):
+        idx = int((price - price_min) / (price_max - price_min) * num_bins)
+        return min(max(idx, 0), num_bins - 1)
+
+    for _, bar in bars.iterrows():
+        low, high, vol = bar["low"], bar["high"], bar["volume"]
+        lo_idx, hi_idx = bin_index(low), bin_index(high)
+        span = hi_idx - lo_idx + 1
+        for i in range(lo_idx, hi_idx + 1):
+            bin_volume[i] += vol / span
+
+    poc_idx = bin_volume.index(max(bin_volume))
+    poc_price = (bin_edges[poc_idx] + bin_edges[poc_idx + 1]) / 2
+    avg_bin_volume = sum(bin_volume) / num_bins
+
+    return {
+        "bin_edges": bin_edges,
+        "bin_volume": bin_volume,
+        "poc_price": round(float(poc_price), 4),
+        "avg_bin_volume": avg_bin_volume,
+        "bin_index": bin_index,
+    }
+
+
+def check_overhead_resistance(profile, current_price, zone_pct=OVERHEAD_ZONE_PCT, hvn_mult=OVERHEAD_HVN_MULT):
+    """Is there a disproportionately heavy volume 'wall' in the price zone
+    just above current price -- real prior supply likely to reject a
+    breakout, distinct from RVOL (which only measures activity over time,
+    not concentration at a specific price)."""
+    if profile is None:
+        return {"clear": True, "note": "no profile data"}
+    zone_top = current_price * (1 + zone_pct / 100)
+    idx_fn = profile["bin_index"]
+    lo_idx, hi_idx = idx_fn(current_price), idx_fn(zone_top)
+    zone_bins = profile["bin_volume"][lo_idx:hi_idx + 1]
+    if not zone_bins:
+        return {"clear": True, "note": "no bins in zone"}
+    max_zone_volume = max(zone_bins)
+    is_wall = max_zone_volume > profile["avg_bin_volume"] * hvn_mult
+    return {
+        "clear": not is_wall,
+        "max_zone_volume": round(max_zone_volume, 1),
+        "avg_bin_volume": round(profile["avg_bin_volume"], 1),
+    }
+
+
 def compute_vwap(bars):
     """Anchored to whatever bars we have (not necessarily full session open) --
     a reasonable approximation, not exact session VWAP if run mid-day on a
@@ -254,8 +321,9 @@ def detect_pole_flag_breakout(bars):
 
 
 def check_entry(code, ctx=None):
-    """Full check: structure, volume, trend, VWAP, momentum, not-overbought,
-    Bollinger squeeze/breakout, key levels, money flow -- 9 checks total.
+    """Full check: structure (incl. false-breakout guard), volume, trend,
+    VWAP, momentum, not-overbought, Bollinger squeeze/breakout, key levels,
+    volume profile (overhead resistance), money flow -- 10 checks total.
     Returns a dict with every individual check's result plus an overall
     'confirmed' bool that's only True if ALL of them pass."""
     owns_ctx = ctx is None
@@ -294,6 +362,10 @@ def check_entry(code, ctx=None):
     levels = compute_key_levels(full_bars, structure["current_price"])
     levels_ok = levels["level_ok"]
 
+    profile = compute_volume_profile(bars)
+    overhead = check_overhead_resistance(profile, structure["current_price"])
+    overhead_ok = overhead["clear"]
+
     flow = flow_confirm.flow_direction(code, ctx=ctx)
     flow_ok = flow.get("ok") and flow["direction"] == "inflow"
 
@@ -309,6 +381,7 @@ def check_entry(code, ctx=None):
         "not_overbought": not_overbought_ok,
         "bollinger": bollinger_ok,
         "levels": levels_ok,
+        "volume_profile": overhead_ok,
         "flow": flow_ok,
     }
 
@@ -332,6 +405,9 @@ def check_entry(code, ctx=None):
             "boll_squeezed": boll["was_squeezed"],
             "premarket_high": levels["premarket_high"],
             "opening_range_high": levels["opening_range_high"],
+            "poc_price": profile["poc_price"] if profile else None,
+            "overhead_max_zone_volume": overhead.get("max_zone_volume"),
+            "overhead_avg_bin_volume": overhead.get("avg_bin_volume"),
             "flow_direction": flow.get("direction", "n/a"),
         },
     }
@@ -354,5 +430,7 @@ if __name__ == "__main__":
         print(f"  MACD={d['macd']}  MACD_signal={d['macd_signal']}  RSI={d['rsi']}  flow={d['flow_direction']}")
         print(f"  BollUpper={d['boll_upper']}  squeezed={d['boll_squeezed']}  "
               f"premarket_high={d['premarket_high']}  opening_range_high={d['opening_range_high']}")
+        print(f"  POC={d['poc_price']}  overhead_max_zone_vol={d['overhead_max_zone_volume']}  "
+              f"avg_bin_vol={d['overhead_avg_bin_volume']}")
     else:
         print(f"  {result.get('reason')}")

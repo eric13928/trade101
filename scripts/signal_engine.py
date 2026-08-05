@@ -1,9 +1,10 @@
 """
 Combines catalyst scanning (news/earnings/ratings/pre-market movers) with a
-fast 1-minute entry-signal check (entry_signal.py: structure, volume, trend,
-VWAP, momentum, not-overbought, Bollinger squeeze/breakout, key levels, money
-flow -- 9 checks, ALL required) to produce a list of genuinely confirmed
-day-trade candidates, sized against your risk config.
+fast 1-minute entry-signal check (entry_signal.py: structure w/ false-breakout
+guard, volume, trend, VWAP, momentum, not-overbought, Bollinger
+squeeze/breakout, key levels, volume profile, money flow -- 10 checks, ALL
+required) to produce a list of genuinely confirmed day-trade candidates,
+sized against your risk config.
 
 Nothing here places any trade. It only proposes candidates for review.
 """
@@ -59,7 +60,7 @@ def run(keywords=None):
         catalysts.setdefault(ticker, f"pre-market mover ({row['pre_market_change_pct']:+.1f}%, no known catalyst)")
 
     print(f"Running 1-minute entry-signal check on {len(catalysts)} candidate(s) "
-          f"(9 checks, all required)...")
+          f"(10 checks, all required)...")
     ctx = OpenQuoteContext(host="127.0.0.1", port=11111)
 
     confirmed = []
