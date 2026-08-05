@@ -41,6 +41,12 @@ strategy's own premise:
     momentum/breakout strategy -- the strongest breakouts are often already
     overbought, so filtering them out works against the strategy's premise
     rather than protecting it
+  - Recent change (adaptive 1-3 min window): distinguishes a move that's
+    STILL happening right now from one that already happened and went flat
+    -- a real gap in pole_pct, which only sees the 10-min high/low range and
+    can't tell whether the move was 9 minutes ago or 30 seconds ago.
+    Informational for now since it's newly added and not yet validated
+    against live data -- candidate for promotion to required once observed.
 
 A candidate only counts as CONFIRMED if all 6 REQUIRED checks pass.
 Informational checks are always reported for context but never gate.
@@ -78,6 +84,9 @@ BOLL_SQUEEZE_PERCENTILE = 25  # bandwidth must be in the narrowest 25% of the lo
 VOLUME_PROFILE_BINS = 20
 OVERHEAD_ZONE_PCT = 2.0    # check for a volume "wall" within this % above current price
 OVERHEAD_HVN_MULT = 1.5    # a bin counts as a wall if its volume exceeds this multiple of the average bin
+RECENT_CHANGE_TARGET_BARS = 3  # distinguishes "still actively moving" from "moved earlier, now flat" --
+                               # a real gap in pole_pct, which only sees the 10-min high/low range and
+                               # can't tell whether the move happened just now or 9 minutes ago
 # MACD/RSI/Bollinger-squeeze-lookback need real warm-up to be meaningful, not
 # just the bare minimum bars -- pull extra history for these, structure/volume
 # checks still just look at the tail end of the same fetch.
@@ -224,6 +233,26 @@ def compute_bollinger_squeeze_breakout(closes, period=BOLL_PERIOD, stddev_mult=B
         "breakout": bool(breakout),
         "upper_band": round(float(current_upper), 4),
         "bandwidth": round(float(current_bandwidth), 4),
+    }
+
+
+def compute_recent_change(bars, target_bars=RECENT_CHANGE_TARGET_BARS):
+    """Adaptive short-term price change: uses up to target_bars of lookback,
+    but reports whatever window is actually available rather than hiding
+    real data behind a binary available/unavailable gate. Returns None only
+    when there's truly nothing to compare against (fewer than 2 bars total)
+    -- otherwise always a real, honestly-labeled number, e.g. a '1-min
+    change' at minute 1 growing to the full target_bars once enough
+    history exists."""
+    if len(bars) < 2:
+        return None
+    actual_bars = min(target_bars, len(bars) - 1)
+    current_price = bars["close"].iloc[-1]
+    past_price = bars["close"].iloc[-(actual_bars + 1)]
+    change_pct = (current_price - past_price) / past_price * 100 if past_price else 0
+    return {
+        "change_pct": round(float(change_pct), 2),
+        "window_bars": actual_bars,
     }
 
 
@@ -441,6 +470,9 @@ def check_entry(code, ctx=None):
     boll = compute_bollinger_squeeze_breakout(bars["close"])
     bollinger_ok = boll["was_squeezed"] and boll["breakout"]
 
+    recent_change = compute_recent_change(bars)
+    recent_change_ok = recent_change is not None and recent_change["change_pct"] > 0
+
     levels = compute_key_levels(full_bars, structure["current_price"], market=market, trading_day=trading_day)
     levels_ok = levels["level_ok"]
 
@@ -479,6 +511,7 @@ def check_entry(code, ctx=None):
         "momentum": momentum_ok,
         "not_overbought": not_overbought_ok,
         "bollinger": bollinger_ok,
+        "recent_change": recent_change_ok,
     }
     checks = {**required_checks, **informational_checks}
 
@@ -508,6 +541,8 @@ def check_entry(code, ctx=None):
             "overhead_max_zone_volume": overhead.get("max_zone_volume"),
             "overhead_avg_bin_volume": overhead.get("avg_bin_volume"),
             "flow_direction": flow.get("direction", "n/a"),
+            "recent_change_pct": recent_change["change_pct"] if recent_change else None,
+            "recent_change_window_min": recent_change["window_bars"] if recent_change else None,
         },
     }
 
@@ -535,5 +570,6 @@ if __name__ == "__main__":
               f"premarket_high={d['premarket_high']}  opening_range_high={d['opening_range_high']}")
         print(f"  POC={d['poc_price']}  overhead_max_zone_vol={d['overhead_max_zone_volume']}  "
               f"avg_bin_vol={d['overhead_avg_bin_volume']}")
+        print(f"  RecentChange({d['recent_change_window_min']}min)={d['recent_change_pct']}%")
     else:
         print(f"  {result.get('reason')}")
