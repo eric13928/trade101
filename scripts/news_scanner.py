@@ -86,8 +86,14 @@ def guess_ticker(ctx, title, budget):
     return pick.get("code"), candidate
 
 
-def get_rating_upgrades(ctx, count=20):
-    """Structured analyst-upgrade feed (real tickers, no keyword guessing needed)."""
+def get_rating_upgrades(ctx, market="US", count=20):
+    """Structured analyst-upgrade feed (real tickers, no keyword guessing
+    needed). moomoo's get_rating_change only supports the US market at all
+    (confirmed in the skill's own MARKET_MAP) -- returns empty for any other
+    market rather than erroring, since that's a real API limitation, not a
+    bug to fix here."""
+    if market != "US":
+        return []
     ret, data, _next_page, all_count = ctx.get_rating_change(
         market=moomoo.Market.US, change_type=moomoo.RatingChangeType.UPGRADE, count=count, page=None,
     )
@@ -113,11 +119,19 @@ def get_rating_upgrades(ctx, count=20):
     return hits
 
 
+EARNINGS_BEAT_MARKET_MAP = {
+    "US": moomoo.Market.US, "HK": moomoo.Market.HK, "SG": moomoo.Market.SG, "JP": moomoo.Market.JP,
+}
+
+
 def get_earnings_beats(ctx, market="US", min_beat_ratio=5.0, min_day_chg=3.0):
     """Pull structured earnings-beat data, keeping only beats that actually
     moved the stock (filters out beats the market shrugged off)."""
+    market_enum = EARNINGS_BEAT_MARKET_MAP.get(market)
+    if market_enum is None:
+        raise ValueError(f"Unsupported market for earnings beat rank: {market}")
     ret, data = ctx.get_earnings_beat_rank(
-        moomoo.Market.US if market == "US" else market,
+        market_enum,
         moomoo.BeatType.EPS,
         count=30,
         term=moomoo.BeatTerm.LATEST,
@@ -170,7 +184,7 @@ def confirmed_candidates(hits, earnings_hits, rating_hits=None):
     return {k: v for k, v in candidates.items() if k.startswith(TRADEABLE_MARKETS)}
 
 
-def scan(keywords, max_count=10, resolve_tickers=True):
+def scan(keywords, max_count=10, resolve_tickers=True, market="US"):
     ctx = OpenQuoteContext(host="127.0.0.1", port=11111)
     seen = load_seen()
     new_hits = []
@@ -204,8 +218,8 @@ def scan(keywords, max_count=10, resolve_tickers=True):
             })
         time.sleep(3.1)  # stay under the 10-req/30s search_news limit
 
-    earnings_hits = get_earnings_beats(ctx) if resolve_tickers else []
-    rating_hits = get_rating_upgrades(ctx) if resolve_tickers else []
+    earnings_hits = get_earnings_beats(ctx, market=market) if resolve_tickers else []
+    rating_hits = get_rating_upgrades(ctx, market=market) if resolve_tickers else []
 
     ctx.close()
     save_seen(seen)

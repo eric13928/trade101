@@ -40,7 +40,7 @@ def _size_note(ticker, price, config, ctx):
             f"stop @ ${stop:.2f}, target @ ${result['target_price_2r']})")
 
 
-def run(keywords=None):
+def run(keywords=None, market="US"):
     keywords = keywords or news_scanner.DEFAULT_KEYWORDS
     config = risk_manager.load_config()
 
@@ -49,15 +49,18 @@ def run(keywords=None):
     print(f"TRADING STATUS: {'OK TO TRADE' if can_trade else 'BLOCKED'} — {cadence_reason}")
     print("=" * 70 + "\n")
 
-    print("Scanning news + earnings + analyst ratings for catalysts...")
-    hits, earnings_hits, rating_hits = news_scanner.scan(keywords, resolve_tickers=True)
+    print(f"Scanning news + earnings + analyst ratings for catalysts ({market})...")
+    hits, earnings_hits, rating_hits = news_scanner.scan(keywords, resolve_tickers=True, market=market)
     catalysts = news_scanner.confirmed_candidates(hits, earnings_hits, rating_hits)
 
-    print("Scanning pre-market movers...")
-    mover_rows = movers_scanner.pre_market_movers()
-    for row in mover_rows:
-        ticker = row["ticker"]
-        catalysts.setdefault(ticker, f"pre-market mover ({row['pre_market_change_pct']:+.1f}%, no known catalyst)")
+    if market == "US":
+        print("Scanning pre-market movers...")
+        mover_rows = movers_scanner.pre_market_movers()
+        for row in mover_rows:
+            ticker = row["ticker"]
+            catalysts.setdefault(ticker, f"pre-market mover ({row['pre_market_change_pct']:+.1f}%, no known catalyst)")
+    else:
+        print(f"Skipping pre-market movers -- moomoo's mover-ranking API is US-only, no {market} equivalent available.")
 
     print(f"Running 1-minute entry-signal check on {len(catalysts)} candidate(s) "
           f"(10 checks, all required)...")
@@ -101,4 +104,8 @@ def run(keywords=None):
 
 
 if __name__ == "__main__":
-    run()
+    import argparse
+    parser = argparse.ArgumentParser(description="Run the full candidate scan")
+    parser.add_argument("--market", default="US", choices=["US", "HK"])
+    args = parser.parse_args()
+    run(market=args.market)

@@ -35,6 +35,7 @@ check passes. Partial matches are reported but never treated as tradeable.
 import argparse
 import sys
 
+import pandas as pd
 from moomoo import OpenQuoteContext, RET_OK, KLType, AuType, Session
 
 import flow_confirm
@@ -70,6 +71,16 @@ OVERHEAD_HVN_MULT = 1.5    # a bin counts as a wall if its volume exceeds this m
 BARS_NEEDED = max(POLE_LOOKBACK_BARS + RVOL_LOOKBACK + 5, (MACD_SLOW + MACD_SIGNAL) * 3,
                   BOLL_PERIOD + BOLL_SQUEEZE_LOOKBACK)
 
+# Regular-session time windows per market, in each exchange's own local time
+# (bar timestamps come back already in local exchange time). HK has a lunch
+# break (no trading 12:00-13:00) -- getting this wrong would silently mix
+# lunch-break gap artifacts into every indicator calculation, so sessions are
+# a list of (start, end) segments, not a single start/end pair.
+MARKET_SESSIONS = {
+    "US": {"regular": [("09:30:00", "16:00:00")], "opening_range_end": "09:45:00"},
+    "HK": {"regular": [("09:30:00", "12:00:00"), ("13:00:00", "16:00:00")], "opening_range_end": "09:45:00"},
+}
+
 
 def fetch_bars(code, ctx):
     """Single fetch covering pre-market through now -- extended_time+ALL is a
@@ -90,16 +101,47 @@ def fetch_bars(code, ctx):
     return df.reset_index(drop=True)
 
 
-def regular_session_bars(full_bars, count=BARS_NEEDED):
-    """Filters the full (extended-hours-inclusive) fetch down to the latest
-    trading day's regular session (09:30-16:00) -- what indicator math should
-    actually be computed on, consistent with the original pre-consolidation
-    behavior (a plain, non-extended query only ever returned RTH bars)."""
+def select_trading_day(full_bars, market="US", min_bars=POLE_LOOKBACK_BARS + 5):
+    """Picks the most recent trading day that actually has enough
+    regular-session bars -- not just the latest calendar date, which can be
+    sparse/partial (confirmed real case: a simulated-data quirk left one HK
+    trading day with only 7 bars covering 09:30-09:36). Shared by
+    regular_session_bars() and compute_key_levels() so both always agree on
+    which day they're analyzing -- calling this independently in each would
+    risk them silently picking different days from the same fetch."""
+    segments = MARKET_SESSIONS[market]["regular"]
     df = full_bars.copy()
     df["date_part"] = df["time_key"].str[:10]
-    latest_day = df["date_part"].max()
     times = df["time_key"].str[11:19]
-    rth = df[(df["date_part"] == latest_day) & (times >= "09:30:00") & (times < "16:00:00")]
+    in_session = pd.Series(False, index=df.index)
+    for start, end in segments:
+        in_session |= (times >= start) & (times < end)
+    rth_only = df[in_session]
+
+    for day in sorted(rth_only["date_part"].unique(), reverse=True):
+        if len(rth_only[rth_only["date_part"] == day]) >= min_bars:
+            return day
+    return None
+
+
+def regular_session_bars(full_bars, market="US", count=BARS_NEEDED, trading_day=None):
+    """Filters the full (extended-hours-inclusive) fetch down to one trading
+    day's regular session -- what indicator math should actually be computed
+    on. Market-aware: HK's session is two segments (excludes the 12:00-13:00
+    lunch break), not one continuous block like the US."""
+    segments = MARKET_SESSIONS[market]["regular"]
+    if trading_day is None:
+        trading_day = select_trading_day(full_bars, market)
+    if trading_day is None:
+        return None
+
+    df = full_bars.copy()
+    df["date_part"] = df["time_key"].str[:10]
+    times = df["time_key"].str[11:19]
+    in_session = pd.Series(False, index=df.index)
+    for start, end in segments:
+        in_session |= (times >= start) & (times < end)
+    rth = df[(df["date_part"] == trading_day) & in_session]
     if len(rth) < POLE_LOOKBACK_BARS + 5:
         return None
     return rth.tail(count).reset_index(drop=True)
@@ -245,7 +287,7 @@ def compute_vwap(bars):
     return (typical * bars["volume"]).sum() / total_volume
 
 
-def compute_key_levels(full_bars, current_price):
+def compute_key_levels(full_bars, current_price, market="US", trading_day=None):
     """Pre-market high and opening-range (first 15 min) high -- standard
     day-trading reference levels our pole/flag logic doesn't otherwise know
     about. Not every candidate will have both available (no pre-market
@@ -254,20 +296,29 @@ def compute_key_levels(full_bars, current_price):
     since that's missing context, not evidence against the trade.
 
     Takes the same full_bars fetch_bars() already pulled (extended_time+ALL)
-    -- no separate API call. "Today" means the most recent trading day
-    present in that data, not the system clock (see fetch_bars' docstring)."""
+    -- no separate API call. trading_day should be passed in from the same
+    select_trading_day() call regular_session_bars() used, so both agree on
+    which day they're analyzing rather than each independently guessing
+    (and potentially disagreeing) via the naive "latest calendar date"."""
     df = full_bars
     if df is None or df.empty:
         return {"premarket_high": None, "opening_range_high": None, "level_ok": True, "note": "no data"}
 
+    if trading_day is None:
+        trading_day = select_trading_day(full_bars, market)
+    if trading_day is None:
+        return {"premarket_high": None, "opening_range_high": None, "level_ok": True, "note": "no valid trading day found"}
+
+    session_open = MARKET_SESSIONS[market]["regular"][0][0]
+    opening_range_end = MARKET_SESSIONS[market]["opening_range_end"]
+
     df = df.copy()
     df["date_part"] = df["time_key"].str[:10]
-    latest_day = df["date_part"].max()
-    day_bars = df[df["date_part"] == latest_day]
+    day_bars = df[df["date_part"] == trading_day]
 
     times = day_bars["time_key"].str[11:19]  # "HH:MM:SS"
-    premarket = day_bars[times < "09:30:00"]
-    opening_range = day_bars[(times >= "09:30:00") & (times < "09:45:00")]
+    premarket = day_bars[times < session_open]
+    opening_range = day_bars[(times >= session_open) & (times < opening_range_end)]
 
     premarket_high = float(premarket["high"].max()) if not premarket.empty else None
     opening_range_high = float(opening_range["high"].max()) if not opening_range.empty else None
@@ -330,13 +381,22 @@ def check_entry(code, ctx=None):
     VWAP, momentum, not-overbought, Bollinger squeeze/breakout, key levels,
     volume profile (overhead resistance), money flow -- 10 checks total.
     Returns a dict with every individual check's result plus an overall
-    'confirmed' bool that's only True if ALL of them pass."""
+    'confirmed' bool that's only True if ALL of them pass.
+
+    Market (session timing) is derived from the ticker's own prefix
+    (US.xxx / HK.xxx), not passed separately -- avoids any risk of the
+    ticker and its session config getting out of sync."""
+    market = code.split(".")[0] if "." in code else "US"
+    if market not in MARKET_SESSIONS:
+        market = "US"
+
     owns_ctx = ctx is None
     if owns_ctx:
         ctx = OpenQuoteContext(host="127.0.0.1", port=11111)
 
     full_bars = fetch_bars(code, ctx)
-    bars = regular_session_bars(full_bars) if full_bars is not None else None
+    trading_day = select_trading_day(full_bars, market) if full_bars is not None else None
+    bars = regular_session_bars(full_bars, market=market, trading_day=trading_day) if full_bars is not None else None
     if bars is None:
         if owns_ctx:
             ctx.close()
@@ -364,7 +424,7 @@ def check_entry(code, ctx=None):
     boll = compute_bollinger_squeeze_breakout(bars["close"])
     bollinger_ok = boll["was_squeezed"] and boll["breakout"]
 
-    levels = compute_key_levels(full_bars, structure["current_price"])
+    levels = compute_key_levels(full_bars, structure["current_price"], market=market, trading_day=trading_day)
     levels_ok = levels["level_ok"]
 
     profile = compute_volume_profile(bars)
