@@ -23,7 +23,7 @@ import time
 
 from moomoo import (
     OpenSecTradeContext, TrdMarket, SecurityFirm, TrdSide, OrderType,
-    TrdEnv, RET_OK, ModifyOrderOp,
+    TrdEnv, RET_OK, ModifyOrderOp, Session,
 )
 
 if sys.platform == "win32":
@@ -61,9 +61,10 @@ def place_bracket_order(code, qty, stop_price, target_price, entry_price=None,
                         acc_id=DEFAULT_ACC_ID, trd_env="SIMULATE", confirmed=False):
     trd_env_enum = TrdEnv.SIMULATE if trd_env == "SIMULATE" else TrdEnv.REAL
     if trd_env_enum == TrdEnv.REAL and not confirmed:
+        entry_desc = f"limit @ ${entry_price}" if entry_price else "market"
         return {
             "status": "preview_only",
-            "message": f"LIVE order preview: BUY {qty} {code} @ market, "
+            "message": f"LIVE order preview: BUY {qty} {code} @ {entry_desc}, "
                       f"then stop @ ${stop_price}, target @ ${target_price}. "
                       f"Re-run with confirmed=True to actually submit.",
         }
@@ -71,11 +72,21 @@ def place_bracket_order(code, qty, stop_price, target_price, entry_price=None,
     ctx = _ctx()
     result = {"code": code, "qty": qty}
 
-    # 1. Entry (market order -- day-trading speed matters more than a few cents of slippage)
-    ret, data = ctx.place_order(
-        price=0, qty=qty, code=code, trd_side=TrdSide.BUY, order_type=OrderType.MARKET,
-        trd_env=trd_env_enum, acc_id=acc_id, remark="bracket-entry",
-    )
+    # 1. Entry. During regular hours, a market order is fine (day-trading speed
+    # matters more than a few cents of slippage). Outside regular hours, market
+    # orders are rejected outright -- must use a limit order with
+    # fill_outside_rth + session=ETH instead (entry_price required in that case).
+    if entry_price:
+        ret, data = ctx.place_order(
+            price=entry_price, qty=qty, code=code, trd_side=TrdSide.BUY, order_type=OrderType.NORMAL,
+            fill_outside_rth=True, session=Session.ETH,
+            trd_env=trd_env_enum, acc_id=acc_id, remark="bracket-entry",
+        )
+    else:
+        ret, data = ctx.place_order(
+            price=0, qty=qty, code=code, trd_side=TrdSide.BUY, order_type=OrderType.MARKET,
+            trd_env=trd_env_enum, acc_id=acc_id, remark="bracket-entry",
+        )
     if ret != RET_OK:
         ctx.close()
         result["status"] = "entry_failed"
@@ -146,12 +157,15 @@ if __name__ == "__main__":
     parser.add_argument("qty", type=int)
     parser.add_argument("stop_price", type=float)
     parser.add_argument("target_price", type=float)
+    parser.add_argument("--entry-price", type=float, default=None,
+                        help="Use a limit entry (required outside regular market hours)")
     parser.add_argument("--acc-id", type=int, default=DEFAULT_ACC_ID)
     parser.add_argument("--trd-env", choices=["SIMULATE", "REAL"], default="SIMULATE")
     parser.add_argument("--confirmed", action="store_true")
     args = parser.parse_args()
 
     r = place_bracket_order(args.code, args.qty, args.stop_price, args.target_price,
+                            entry_price=args.entry_price,
                             acc_id=args.acc_id, trd_env=args.trd_env, confirmed=args.confirmed)
     for k, v in r.items():
         print(f"{k}: {v}")
