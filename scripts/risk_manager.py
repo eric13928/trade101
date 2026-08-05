@@ -23,6 +23,37 @@ if sys.platform == "win32":
 CONFIG_FILE = os.path.join(os.path.dirname(__file__), "risk_config.json")
 STATE_FILE = os.path.join(os.path.dirname(__file__), "data", "trade_log.json")
 
+# risk_config.json's numbers (account_equity, risk_per_trade_dollars, etc.)
+# are all in USD. HK stocks trade in HKD -- without conversion, a $100 USD
+# risk figure would get treated as 100 HKD directly when sizing an HK
+# position, an ~8x error. moomoo's FX quotes aren't accessible with this
+# account's permissions ("Unsupported quote market", same error as the
+# earlier Canada finding), but USD/HKD specifically doesn't need a live
+# rate anyway -- it's a currency PEG the Hong Kong Monetary Authority has
+# held in a narrow 7.75-7.85 band since 1983, not a freely floating pair.
+# A fixed approximate rate is a defensible simplification for this pair
+# specifically (it would NOT be for most currencies).
+CURRENCY_BY_MARKET = {"US": "USD", "HK": "HKD"}
+HKD_PER_USD = 7.80  # mid-point of the official peg band (7.75-7.85)
+
+
+def usd_to_local(usd_amount, market):
+    """Converts a USD-denominated risk_config figure into the ticker's
+    local trading currency."""
+    currency = CURRENCY_BY_MARKET.get(market, "USD")
+    if currency == "HKD":
+        return usd_amount * HKD_PER_USD
+    return usd_amount
+
+
+def local_to_usd(local_amount, market):
+    """Inverse of usd_to_local -- for reporting actual risk back in USD
+    terms regardless of which market the trade was in."""
+    currency = CURRENCY_BY_MARKET.get(market, "USD")
+    if currency == "HKD":
+        return local_amount / HKD_PER_USD
+    return local_amount
+
 
 def load_config():
     with open(CONFIG_FILE, "r", encoding="utf-8") as f:
@@ -42,27 +73,41 @@ def _save_state(state):
         json.dump(state, f, indent=2)
 
 
-def calculate_position_size(entry_price, stop_price, config=None):
+def calculate_position_size(entry_price, stop_price, config=None, ticker=None):
     """Shares to buy so a stop-out loses exactly risk_per_trade_dollars,
-    capped by actual buying power (can't spend more than the account has)."""
+    capped by actual buying power (can't spend more than the account has).
+
+    risk_config.json's dollar figures are USD; entry_price/stop_price are in
+    whatever currency the ticker actually trades in (HKD for HK.xxx). Pass
+    `ticker` so the risk/equity figures get converted into that currency
+    before being compared against local-currency prices -- omitting it
+    silently assumes USD, which is correct for US tickers but WRONG for
+    anything else (an ~8x error for HK, specifically)."""
     config = config or load_config()
+    market = ticker.split(".")[0] if ticker and "." in ticker else "US"
+
     risk_per_share = abs(entry_price - stop_price)
     if risk_per_share <= 0:
         raise ValueError("entry_price and stop_price can't be equal")
 
-    risk_dollars = config["risk_per_trade_dollars"]
-    shares_by_risk = int(risk_dollars / risk_per_share)
+    risk_dollars_usd = config["risk_per_trade_dollars"]
+    risk_local = usd_to_local(risk_dollars_usd, market)
+    shares_by_risk = int(risk_local / risk_per_share)
 
-    equity = config["account_equity"]
-    shares_by_buying_power = int(equity / entry_price)
+    equity_usd = config["account_equity"]
+    equity_local = usd_to_local(equity_usd, market)
+    shares_by_buying_power = int(equity_local / entry_price)
 
     shares = min(shares_by_risk, shares_by_buying_power)
     capped_by_buying_power = shares_by_buying_power < shares_by_risk
+    actual_risk_local = round(shares * risk_per_share, 2)
 
     return {
         "shares": max(shares, 0),
+        "currency": CURRENCY_BY_MARKET.get(market, "USD"),
         "cost": round(shares * entry_price, 2),
-        "actual_risk_dollars": round(shares * risk_per_share, 2),
+        "actual_risk_local": actual_risk_local,
+        "actual_risk_dollars": round(local_to_usd(actual_risk_local, market), 2),
         "target_price_2r": round(entry_price + (entry_price - stop_price) * 2, 2) if entry_price > stop_price
                             else round(entry_price - (stop_price - entry_price) * 2, 2),
         "capped_by_buying_power": capped_by_buying_power,
@@ -151,6 +196,7 @@ if __name__ == "__main__":
     p_size = sub.add_parser("size", help="calculate position size for a trade")
     p_size.add_argument("entry_price", type=float)
     p_size.add_argument("stop_price", type=float)
+    p_size.add_argument("--ticker", default=None, help="e.g. HK.00700 -- determines currency, defaults to USD")
 
     sub.add_parser("check", help="can we trade today?")
 
@@ -162,10 +208,10 @@ if __name__ == "__main__":
     args = parser.parse_args()
 
     if args.cmd == "size":
-        result = calculate_position_size(args.entry_price, args.stop_price)
-        print(f"Buy {result['shares']} shares  (cost ${result['cost']}, "
-              f"risking ${result['actual_risk_dollars']})")
-        print(f"2:1 reward target: ${result['target_price_2r']}")
+        result = calculate_position_size(args.entry_price, args.stop_price, ticker=args.ticker)
+        print(f"Buy {result['shares']} shares  (cost {result['currency']} {result['cost']}, "
+              f"risking {result['currency']} {result['actual_risk_local']} = ${result['actual_risk_dollars']} USD)")
+        print(f"2:1 reward target: {result['currency']} {result['target_price_2r']}")
         if result["capped_by_buying_power"]:
             print("Note: capped by available buying power, not your risk limit.")
     elif args.cmd == "check":

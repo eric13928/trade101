@@ -36,10 +36,11 @@ def _size_note(ticker, price, config, ctx):
     except Exception as e:
         return f"size: n/a (stop calc failed: {e})"
     if stop >= price:
-        return f"size: n/a (stop ${stop:.2f} is above current price ${price:.2f} -- invalidated)"
-    result = risk_manager.calculate_position_size(price, stop, config)
-    return (f"size: {result['shares']} sh (${result['actual_risk_dollars']} risk, "
-            f"stop @ ${stop:.2f}, target @ ${result['target_price_2r']})")
+        return f"size: n/a (stop {stop:.2f} is above current price {price:.2f} -- invalidated)"
+    result = risk_manager.calculate_position_size(price, stop, config, ticker=ticker)
+    return (f"size: {result['shares']} sh ({result['currency']} {result['actual_risk_local']} = "
+            f"${result['actual_risk_dollars']} USD risk, stop @ {result['currency']} {stop:.2f}, "
+            f"target @ {result['currency']} {result['target_price_2r']})")
 
 
 def run(keywords=None, market="US"):
