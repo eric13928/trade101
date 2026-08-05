@@ -1,10 +1,12 @@
 """
 Combines catalyst scanning (news/earnings/ratings/pre-market movers) with a
-fast 1-minute entry-signal check (entry_signal.py: structure w/ false-breakout
-guard, volume, trend, VWAP, momentum, not-overbought, Bollinger
-squeeze/breakout, key levels, volume profile, money flow -- 10 checks, ALL
-required) to produce a list of genuinely confirmed day-trade candidates,
-sized against your risk config.
+fast 1-minute entry-signal check (entry_signal.py: 6 REQUIRED checks --
+structure w/ false-breakout guard, volume, VWAP, key levels, volume
+profile, money flow -- plus trend/momentum/Bollinger/RSI kept as
+informational context only, since they were found to be either redundant
+with the required checks or working against a momentum/breakout strategy)
+to produce a list of genuinely confirmed day-trade candidates, sized
+against your risk config.
 
 Nothing here places any trade. It only proposes candidates for review.
 """
@@ -63,7 +65,7 @@ def run(keywords=None, market="US"):
         print(f"Skipping pre-market movers -- moomoo's mover-ranking API is US-only, no {market} equivalent available.")
 
     print(f"Running 1-minute entry-signal check on {len(catalysts)} candidate(s) "
-          f"(10 checks, all required)...")
+          f"(6 required checks + 4 informational-only)...")
     ctx = OpenQuoteContext(host="127.0.0.1", port=11111)
 
     confirmed = []
@@ -77,7 +79,7 @@ def run(keywords=None, market="US"):
         time.sleep(1.5)  # paces both the kline call and the capital-flow call inside check_entry
 
     print("\n" + "=" * 70)
-    print(f"CONFIRMED ({len(confirmed)}) — catalyst + ALL entry checks pass")
+    print(f"CONFIRMED ({len(confirmed)}) — catalyst + all 6 required entry checks pass")
     print("=" * 70)
     if not confirmed:
         print("None right now.")
@@ -93,9 +95,11 @@ def run(keywords=None, market="US"):
     if not watching:
         print("None right now.")
     for ticker, reason, result in watching:
-        if "checks" in result:
-            failed = [name for name, ok in result["checks"].items() if not ok]
-            print(f"  {ticker}  missing: {', '.join(failed)}  <-  {reason}")
+        if "required_checks" in result:
+            failed = [name for name, ok in result["required_checks"].items() if not ok]
+            info_failed = [name for name, ok in result["informational_checks"].items() if not ok]
+            note = f"  (fyi also missing: {', '.join(info_failed)})" if info_failed else ""
+            print(f"  {ticker}  missing: {', '.join(failed)}{note}  <-  {reason}")
         else:
             print(f"  {ticker}  ({result.get('reason', 'no data')})  <-  {reason}")
 

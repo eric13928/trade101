@@ -3,23 +3,18 @@ Fast (1-minute) entry-signal detection for short (~10 min) day trades.
 
 moomoo's own pattern-shape engine (FLAG etc.) only supports Daily/Hourly bars
 -- confirmed unusable for this holding period. So this module detects the
-pole -> flag -> breakout structure directly from 1-minute candles ourselves,
-and requires a full standard confirmation stack before calling anything a
-real signal -- these are not optional extras, they're baseline requirements
-for any legitimate pattern read:
+pole -> flag -> breakout structure directly from 1-minute candles ourselves.
 
-  - False-breakout guard: the breakout must hold for 2 consecutive closed
-    bars, not just one -- a single-bar spike that immediately reverses (a
-    real, common failure mode -- see RRR from earlier testing) no longer
-    counts as confirmed
+REQUIRED (all 6 must pass for CONFIRMED) -- each measures something
+genuinely independent, not a restatement of another check:
+
+  - Structure (incl. false-breakout guard): pole -> flag -> breakout that
+    holds for 2 consecutive closed bars, not just one -- a single-bar spike
+    that immediately reverses (a real, common failure mode -- see RRR from
+    earlier testing) no longer counts as confirmed
   - Volume: the breakout bar must show real relative volume, not thin trading
-  - Trend: price must be above its short EMA (not fighting the trend)
-  - VWAP: price must be above session VWAP (standard intraday bullish filter)
-  - Momentum: MACD line above its signal line (move is accelerating, not stalling)
-  - Not overbought: RSI below a ceiling (avoid chasing an already-extended move)
-  - Bollinger squeeze/breakout: volatility was recently contracted (a squeeze --
-    an independent, statistical version of the same "coiling" idea the pole/
-    flag check looks for) and price is now breaking above the upper band
+  - VWAP: price must be above session VWAP (the single most-watched
+    intraday reference level for professional day traders)
   - Key levels: price above today's pre-market high (and the opening-range
     high, once the first 15 minutes have passed) -- standard day-trading
     reference points our own pole/flag logic doesn't otherwise know about
@@ -27,10 +22,28 @@ for any legitimate pattern read:
     just above current price -- a High Volume Node close overhead means real
     prior supply likely to reject the breakout, a different signal from RVOL
     (which is time-based -- "is trading active right now" -- not price-based)
-  - Money flow: buy pressure via get_capital_flow (flow_confirm.py)
+  - Money flow: buy pressure via get_capital_flow (flow_confirm.py) -- the
+    only check based on actual buy/sell aggression, not derived from price
 
-A candidate only counts as CONFIRMED if the structure AND every confirmation
-check passes. Partial matches are reported but never treated as tradeable.
+INFORMATIONAL ONLY (computed, shown, but never block a signal) -- found to
+be either redundant with the required checks or working against the
+strategy's own premise:
+
+  - Trend (EMA9) and Momentum (MACD): both near-guaranteed to already be
+    true if structure+volume confirm a real breakout -- not independent
+    evidence, just derived restatements of the same price action
+  - Bollinger squeeze/breakout: measures nearly the same "coiled ->
+    expanding" idea as structure, via different math -- a second proof of
+    the same thing, not new information (confirmed live: on a real test
+    run, structure and bollinger failed on 100% of candidates together,
+    exactly as expected from two checks measuring the same phenomenon)
+  - Not overbought (RSI): a mean-reversion concept that actively fights a
+    momentum/breakout strategy -- the strongest breakouts are often already
+    overbought, so filtering them out works against the strategy's premise
+    rather than protecting it
+
+A candidate only counts as CONFIRMED if all 6 REQUIRED checks pass.
+Informational checks are always reported for context but never gate.
 """
 import argparse
 import sys
@@ -377,11 +390,15 @@ def detect_pole_flag_breakout(bars):
 
 
 def check_entry(code, ctx=None):
-    """Full check: structure (incl. false-breakout guard), volume, trend,
-    VWAP, momentum, not-overbought, Bollinger squeeze/breakout, key levels,
-    volume profile (overhead resistance), money flow -- 10 checks total.
-    Returns a dict with every individual check's result plus an overall
-    'confirmed' bool that's only True if ALL of them pass.
+    """6 REQUIRED checks: structure (incl. false-breakout guard), volume,
+    VWAP, key levels, volume profile (overhead resistance), money flow --
+    each measures something genuinely independent. 'confirmed' is True only
+    if all 6 pass. Plus 4 INFORMATIONAL checks (trend, momentum,
+    not-overbought, Bollinger) computed and returned for context but not
+    required -- they were found to be either redundant with the required
+    checks or, in RSI's case, actively working against a momentum/breakout
+    strategy. See the inline comments above required_checks/
+    informational_checks in this function for the full reasoning.
 
     Market (session timing) is derived from the ticker's own prefix
     (US.xxx / HK.xxx), not passed separately -- avoids any risk of the
@@ -437,23 +454,40 @@ def check_entry(code, ctx=None):
     if owns_ctx:
         ctx.close()
 
-    checks = {
+    # Required: each measures something genuinely independent (setup shape,
+    # real participation, the most-watched intraday level, prior overhead
+    # supply, and actual buy/sell aggression). All must pass.
+    required_checks = {
         "structure": structure["pole_ok"] and structure["flag_ok"] and structure["breakout"],
         "volume": volume_ok,
-        "trend": trend_ok,
         "vwap": vwap_ok,
-        "momentum": momentum_ok,
-        "not_overbought": not_overbought_ok,
-        "bollinger": bollinger_ok,
         "levels": levels_ok,
         "volume_profile": overhead_ok,
         "flow": flow_ok,
     }
+    # Informational only, NOT required -- kept for context, but don't block:
+    # - trend (EMA9) and momentum (MACD) are near-redundant with structure/volume
+    #   (a real breakout is already almost guaranteed to satisfy both)
+    # - bollinger squeeze/breakout measures nearly the same "coiled -> expanding"
+    #   idea as structure, just via a different formula -- a second proof of the
+    #   same thing, not independent evidence
+    # - not_overbought (RSI) is a mean-reversion concept that actively fights a
+    #   momentum/breakout strategy -- the strongest breakouts are often already
+    #   overbought, so filtering them out works against the strategy's own premise
+    informational_checks = {
+        "trend": trend_ok,
+        "momentum": momentum_ok,
+        "not_overbought": not_overbought_ok,
+        "bollinger": bollinger_ok,
+    }
+    checks = {**required_checks, **informational_checks}
 
     return {
         "code": code,
-        "confirmed": all(checks.values()),
+        "confirmed": all(required_checks.values()),
         "checks": checks,
+        "required_checks": required_checks,
+        "informational_checks": informational_checks,
         "detail": {
             "pole_pct": structure["pole_pct"],
             "retrace_pct": structure["retrace_pct"],
@@ -486,8 +520,12 @@ if __name__ == "__main__":
     result = check_entry(args.code)
     print(f"{result['code']}: {'CONFIRMED' if result['confirmed'] else 'not confirmed'}")
     if "checks" in result:
-        for name, passed in result["checks"].items():
-            print(f"  [{'x' if passed else ' '}] {name}")
+        print("  Required:")
+        for name, passed in result["required_checks"].items():
+            print(f"    [{'x' if passed else ' '}] {name}")
+        print("  Informational only (not required):")
+        for name, passed in result["informational_checks"].items():
+            print(f"    [{'x' if passed else ' '}] {name}")
         d = result["detail"]
         print(f"  pole={d['pole_pct']}%  retrace={d['retrace_pct']}%  breakout={d['breakout']}  "
               f"price={d['current_price']}  flag_high={d['flag_high']}")
