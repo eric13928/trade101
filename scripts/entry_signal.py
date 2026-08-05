@@ -8,6 +8,10 @@ and requires a full standard confirmation stack before calling anything a
 real signal -- these are not optional extras, they're baseline requirements
 for any legitimate pattern read:
 
+  - False-breakout guard: the breakout must hold for 2 consecutive closed
+    bars, not just one -- a single-bar spike that immediately reverses (a
+    real, common failure mode -- see RRR from earlier testing) no longer
+    counts as confirmed
   - Volume: the breakout bar must show real relative volume, not thin trading
   - Trend: price must be above its short EMA (not fighting the trend)
   - VWAP: price must be above session VWAP (standard intraday bullish filter)
@@ -42,6 +46,7 @@ if sys.platform == "win32":
 POLE_LOOKBACK_BARS = 10
 POLE_MIN_PCT = 2.0          # pole must be at least a 2% move within the lookback
 FLAG_MAX_RETRACE_PCT = 50.0  # flag can't give back more than half the pole's gain
+BREAKOUT_SUSTAIN_BARS = 2    # breakout must hold for this many consecutive closed bars, not just one (false-breakout guard)
 EMA_PERIOD = 9
 RVOL_LOOKBACK = 20
 RVOL_MIN_MULT = 1.5          # breakout bar must have >=1.5x recent avg volume
@@ -213,9 +218,18 @@ def compute_key_levels(full_bars, current_price):
 def detect_pole_flag_breakout(bars):
     """Returns dict describing whether the last bars form pole->flag->breakout,
     using only the shape of the bars -- no volume/trend confirmation here,
-    that's layered on separately in check_entry()."""
-    pole_window = bars.iloc[-(POLE_LOOKBACK_BARS + 5):-5] if len(bars) >= POLE_LOOKBACK_BARS + 5 else bars
-    flag_window = bars.iloc[-5:]
+    that's layered on separately in check_entry().
+
+    False-breakout guard: flag_high is computed from a window that EXCLUDES
+    the most recent BREAKOUT_SUSTAIN_BARS bars, and breakout only counts as
+    confirmed if ALL of those recent bars closed above it -- not just the
+    single latest one. A one-bar spike above the level that immediately
+    reverses on the next bar (a real, common failure mode -- see the RRR
+    example from earlier testing) no longer counts as a breakout."""
+    sustain_bars = bars.iloc[-BREAKOUT_SUSTAIN_BARS:]
+    flag_window = bars.iloc[-(5 + BREAKOUT_SUSTAIN_BARS):-BREAKOUT_SUSTAIN_BARS]
+    pole_start = POLE_LOOKBACK_BARS + 5 + BREAKOUT_SUSTAIN_BARS
+    pole_window = bars.iloc[-pole_start:-(5 + BREAKOUT_SUSTAIN_BARS)] if len(bars) >= pole_start else bars
 
     pole_low = pole_window["low"].min()
     pole_high = pole_window["high"].max()
@@ -226,7 +240,7 @@ def detect_pole_flag_breakout(bars):
     retrace_pct = (pole_high - flag_low) / (pole_high - pole_low) * 100 if pole_high > pole_low else 100
 
     current_price = bars["close"].iloc[-1]
-    breakout = current_price > flag_high
+    breakout_sustained = bool((sustain_bars["close"] > flag_high).all())
 
     return {
         "pole_pct": round(float(pole_pct), 2),
@@ -235,7 +249,7 @@ def detect_pole_flag_breakout(bars):
         "flag_ok": retrace_pct <= FLAG_MAX_RETRACE_PCT,
         "flag_high": round(float(flag_high), 4),
         "current_price": round(float(current_price), 4),
-        "breakout": bool(breakout),
+        "breakout": breakout_sustained,
     }
 
 
