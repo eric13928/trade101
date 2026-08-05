@@ -235,9 +235,14 @@ def check_overhead_resistance(profile, current_price, zone_pct=OVERHEAD_ZONE_PCT
 def compute_vwap(bars):
     """Anchored to whatever bars we have (not necessarily full session open) --
     a reasonable approximation, not exact session VWAP if run mid-day on a
-    fresh lookback window."""
+    fresh lookback window. Returns None (not NaN) if the window has zero
+    total volume -- happens on illiquid/halted names -- so the caller can
+    fail the check explicitly instead of silently comparing against NaN."""
+    total_volume = bars["volume"].sum()
+    if not total_volume:
+        return None
     typical = (bars["high"] + bars["low"] + bars["close"]) / 3
-    return (typical * bars["volume"]).sum() / bars["volume"].sum()
+    return (typical * bars["volume"]).sum() / total_volume
 
 
 def compute_key_levels(full_bars, current_price):
@@ -343,7 +348,7 @@ def check_entry(code, ctx=None):
     trend_ok = structure["current_price"] > ema
 
     vwap = compute_vwap(bars)
-    vwap_ok = structure["current_price"] > vwap
+    vwap_ok = vwap is not None and structure["current_price"] > vwap
 
     recent_vol = bars["volume"].iloc[-1]
     avg_vol = bars["volume"].iloc[-(RVOL_LOOKBACK + 1):-1].mean()
@@ -396,7 +401,7 @@ def check_entry(code, ctx=None):
             "current_price": structure["current_price"],
             "flag_high": structure["flag_high"],
             "ema9": round(float(ema), 4),
-            "vwap": round(float(vwap), 4),
+            "vwap": round(float(vwap), 4) if vwap is not None else None,
             "rvol": round(float(rvol), 2),
             "macd": round(macd_line, 4),
             "macd_signal": round(macd_signal, 4),
