@@ -184,25 +184,26 @@ def confirmed_candidates(hits, earnings_hits, rating_hits=None):
     return {k: v for k, v in candidates.items() if k.startswith(TRADEABLE_MARKETS)}
 
 
-MIN_TRADEABLE_PRICE = 5.0  # below this = penny stock, per this account's risk profile
+MIN_TRADEABLE_PRICE = 2.0   # tradeable price band for this account's risk profile
+MAX_TRADEABLE_PRICE = 15.0  # (also keeps out both penny stocks and higher-priced names)
 OTC_EXCHANGE_TYPES = {"US_PINK"}  # moomoo's exchange_type value for Pink Sheets/OTC listings
 
 
-def filter_tradeable_candidates(candidates, ctx, min_price=MIN_TRADEABLE_PRICE):
-    """Drops penny stocks (price < min_price) and OTC/Pink-Sheet listings from
-    a candidate dict. These trade with wide spreads, thin/unreliable data, and
-    higher manipulation risk -- a different risk profile than this system's
-    checks are built for, and they were also inflating scan-cycle time."""
+def filter_tradeable_candidates(candidates, ctx, min_price=MIN_TRADEABLE_PRICE, max_price=MAX_TRADEABLE_PRICE):
+    """Drops candidates outside the $2-$15 price band and OTC/Pink-Sheet
+    listings from a candidate dict. Penny stocks and OTC names trade with
+    wide spreads, thin/unreliable data, and higher manipulation risk; the
+    price band also narrows the list to speed up scan cycles.
+
+    OTC codes must be excluded BEFORE the price lookup, not after: moomoo's
+    batch snapshot call rejects the ENTIRE request if even one code in it is
+    an OTC/pink-sheet ticker ("US OTC market quote is not available for
+    <code>") -- confirmed live, this was silently killing price data for
+    every other candidate in the batch whenever one OTC name slipped in."""
     if not candidates:
         return candidates
 
     codes = list(candidates.keys())
-
-    price_by_code = {}
-    ret, snap = ctx.get_market_snapshot(codes)
-    if ret == RET_OK and snap is not None and not snap.empty:
-        for _, row in snap.iterrows():
-            price_by_code[row.get("code")] = row.get("last_price")
 
     otc_codes = set()
     us_codes = [c for c in codes if c.startswith("US.")]
@@ -211,12 +212,20 @@ def filter_tradeable_candidates(candidates, ctx, min_price=MIN_TRADEABLE_PRICE):
         if ret2 == RET_OK and basic is not None and not basic.empty:
             otc_codes = set(basic[basic["exchange_type"].isin(OTC_EXCHANGE_TYPES)]["code"])
 
+    non_otc_codes = [c for c in codes if c not in otc_codes]
+    price_by_code = {}
+    if non_otc_codes:
+        ret, snap = ctx.get_market_snapshot(non_otc_codes)
+        if ret == RET_OK and snap is not None and not snap.empty:
+            for _, row in snap.iterrows():
+                price_by_code[row.get("code")] = row.get("last_price")
+
     filtered = {}
     for code, reason in candidates.items():
-        price = price_by_code.get(code)
-        if price is not None and price < min_price:
-            continue
         if code in otc_codes:
+            continue
+        price = price_by_code.get(code)
+        if price is not None and (price < min_price or price > max_price):
             continue
         filtered[code] = reason
     return filtered

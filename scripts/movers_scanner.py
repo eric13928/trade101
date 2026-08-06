@@ -18,10 +18,13 @@ if sys.platform == "win32":
         pass
 
 
-def pre_market_movers(min_price=5.0, min_change_pct=5.0, count=30):
+def pre_market_movers(min_price=2.0, min_change_pct=5.0, count=30):
     """Real pre-market movers, filtered to avoid illiquid penny-stock noise
     (unfiltered results are dominated by sub-$1 stocks with 100%+ swings on
-    almost no volume -- not tradeable in practice)."""
+    almost no volume -- not tradeable in practice). min_price defaults to
+    the low end of news_scanner.filter_tradeable_candidates' $2-$15 band so
+    that filter -- not this one -- is the single source of truth for the
+    tradeable price range; the upper bound is enforced there, downstream."""
     ctx = OpenQuoteContext(host="127.0.0.1", port=11111)
     ret, data = ctx.get_us_pre_market_rank(sort_dir=RankSortDir.DESCENDING, count=count)
     ctx.close()
