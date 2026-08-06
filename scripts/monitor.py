@@ -33,6 +33,7 @@ if sys.platform == "win32":
 ALERTED_FILE = os.path.join(os.path.dirname(__file__), "data", "alerted_tickers.json")
 CHECK_PACING_SECONDS = 1.5  # between individual candidate checks -- matches signal_engine.py's tested rate-limit-safe pacing
 CANDIDATE_REFRESH_SECONDS = 300  # refresh the catalyst list every 5 min
+NEAR_MISS_MAX_MISSING = 1  # "watch close" fires once structure has confirmed and at most this many other required checks remain
 
 
 def load_alerted():
@@ -80,6 +81,20 @@ def print_alert(ticker, reason, result, ctx, config):
     print("=" * 70)
 
 
+def print_near_miss(ticker, reason, result, missing):
+    """Advance-warning alert, distinct from print_alert(): structure has
+    already confirmed (a real, sustained breakout is happening right now)
+    but the candidate isn't fully confirmed yet. Meant to be seen BEFORE the
+    final confirmation so a manually-executed trade doesn't lose the whole
+    reaction-time gap to reading the alert cold -- by the time it's fully
+    confirmed, you're already watching and ready, not starting from zero."""
+    d = result["detail"]
+    print(f"\n>>> WATCH CLOSE: {ticker} -- structure confirmed, missing only: {', '.join(missing)}")
+    print(f"    catalyst: {reason}")
+    print(f"    price={d['current_price']}  pole={d['pole_pct']}%  flag_high={d['flag_high']}  "
+          f"rvol={d['rvol']}x  flow={d['flow_direction']}")
+
+
 def run_monitor(market="US", duration_seconds=120, check_pacing=CHECK_PACING_SECONDS,
                 candidate_refresh=CANDIDATE_REFRESH_SECONDS):
     config = risk_manager.load_config()
@@ -93,6 +108,7 @@ def run_monitor(market="US", duration_seconds=120, check_pacing=CHECK_PACING_SEC
     print(f"Initial candidate list: {len(candidates)} ticker(s)")
     last_refresh = time.time()
     new_alerts = []
+    near_miss_seen = {}  # ticker -> missing-checks list last alerted, this chunk only (resets on restart)
 
     pass_num = 0
     while time.time() - start < duration_seconds:
@@ -123,6 +139,13 @@ def run_monitor(market="US", duration_seconds=120, check_pacing=CHECK_PACING_SEC
                 alerted.add(ticker)
                 new_alerts.append(ticker)
                 save_alerted(alerted)
+            elif "required_checks" in result:
+                req = result["required_checks"]
+                missing = sorted(k for k, v in req.items() if not v)
+                if req.get("structure") and len(missing) <= NEAR_MISS_MAX_MISSING \
+                        and near_miss_seen.get(ticker) != missing:
+                    print_near_miss(ticker, reason, result, missing)
+                    near_miss_seen[ticker] = missing
             time.sleep(check_pacing)
 
         print(f"  (checked {checked_this_pass} not-yet-alerted candidate(s) this pass)")
