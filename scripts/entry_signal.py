@@ -394,18 +394,27 @@ def compute_key_levels(full_bars, current_price, market="US", trading_day=None):
     premarket_high = float(premarket["high"].max()) if not premarket.empty else None
     opening_range_high = float(opening_range["high"].max()) if not opening_range.empty else None
 
-    checks_available = []
+    # Pre-market high is the primary momentum reference: if regular-session buyers
+    # are paying more than the pre-market crowd did, that's a direct signal the
+    # move carried through the open. Opening-range high is only a fallback for
+    # candidates with no pre-market trading to compare against (e.g. a catalyst
+    # that breaks after 9:30) -- not stacked on top of pre-market high as a
+    # second, redundant requirement.
     if premarket_high is not None:
-        checks_available.append(current_price > premarket_high)
-    if opening_range_high is not None:
-        checks_available.append(current_price > opening_range_high)
+        level_ok = current_price > premarket_high
+        note = "ok (vs premarket high)"
+    elif opening_range_high is not None:
+        level_ok = current_price > opening_range_high
+        note = "ok (vs opening-range high -- no premarket data)"
+    else:
+        level_ok = True  # nothing to check against -> don't block
+        note = "no reference levels available yet"
 
-    level_ok = all(checks_available) if checks_available else True  # nothing to check against -> don't block
     return {
         "premarket_high": premarket_high,
         "opening_range_high": opening_range_high,
         "level_ok": level_ok,
-        "note": "ok" if checks_available else "no reference levels available yet",
+        "note": note,
     }
 
 
