@@ -16,6 +16,8 @@ import time
 import moomoo
 from moomoo import OpenQuoteContext, RET_OK, NewsSubType
 
+import risk_manager
+
 if sys.platform == "win32":
     try:
         sys.stdout.reconfigure(encoding="utf-8")
@@ -190,10 +192,14 @@ OTC_EXCHANGE_TYPES = {"US_PINK"}  # moomoo's exchange_type value for Pink Sheets
 
 
 def filter_tradeable_candidates(candidates, ctx, min_price=MIN_TRADEABLE_PRICE, max_price=MAX_TRADEABLE_PRICE):
-    """Drops candidates outside the $2-$15 price band and OTC/Pink-Sheet
+    """Drops candidates outside the $2-$15 (USD) price band and OTC/Pink-Sheet
     listings from a candidate dict. Penny stocks and OTC names trade with
     wide spreads, thin/unreliable data, and higher manipulation risk; the
     price band also narrows the list to speed up scan cycles.
+
+    The $2-$15 band is USD -- converted to each candidate's own local
+    currency (e.g. HKD for HK.* tickers) via risk_manager before comparing,
+    since moomoo's snapshot price is in local currency, not USD.
 
     OTC codes must be excluded BEFORE the price lookup, not after: moomoo's
     batch snapshot call rejects the ENTIRE request if even one code in it is
@@ -225,8 +231,12 @@ def filter_tradeable_candidates(candidates, ctx, min_price=MIN_TRADEABLE_PRICE, 
         if code in otc_codes:
             continue
         price = price_by_code.get(code)
-        if price is not None and (price < min_price or price > max_price):
-            continue
+        if price is not None:
+            market = code.split(".")[0] if "." in code else "US"
+            local_min = risk_manager.usd_to_local(min_price, market)
+            local_max = risk_manager.usd_to_local(max_price, market)
+            if price < local_min or price > local_max:
+                continue
         filtered[code] = reason
     return filtered
 
