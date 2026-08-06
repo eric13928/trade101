@@ -69,7 +69,11 @@ if sys.platform == "win32":
 # real results yet -- expect to adjust after watching this run live.
 POLE_LOOKBACK_BARS = 10
 POLE_MIN_PCT = 2.0          # pole must be at least a 2% move within the lookback
-FLAG_MAX_RETRACE_PCT = 50.0  # flag can't give back more than half the pole's gain
+FLAG_WINDOW_BARS = 20        # widened from 5 -- gap-driven catalysts (earnings pops at the open) often
+                             # consolidate for 20-30 min, not 5; a 5-min window was too narrow to see
+                             # the real flag shape, catching an arbitrary recent slice instead
+FLAG_MAX_RETRACE_PCT = 65.0  # loosened from 50 -- a longer flag window naturally has more room to
+                             # wobble before it's genuinely broken, not reversing
 BREAKOUT_SUSTAIN_BARS = 2    # breakout must hold for this many consecutive closed bars, not just one (false-breakout guard)
 EMA_PERIOD = 9
 RVOL_LOOKBACK = 20
@@ -133,7 +137,7 @@ def fetch_bars(code, ctx):
     return df.reset_index(drop=True)
 
 
-def select_trading_day(full_bars, market="US", min_bars=POLE_LOOKBACK_BARS + 5):
+def select_trading_day(full_bars, market="US", min_bars=POLE_LOOKBACK_BARS + FLAG_WINDOW_BARS):
     """Picks the most recent trading day that actually has enough
     regular-session bars -- not just the latest calendar date, which can be
     sparse/partial (confirmed real case: a simulated-data quirk left one HK
@@ -174,7 +178,7 @@ def regular_session_bars(full_bars, market="US", count=BARS_NEEDED, trading_day=
     for start, end in segments:
         in_session |= (times >= start) & (times < end)
     rth = df[(df["date_part"] == trading_day) & in_session]
-    if len(rth) < POLE_LOOKBACK_BARS + 5:
+    if len(rth) < POLE_LOOKBACK_BARS + FLAG_WINDOW_BARS:
         return None
     return rth.tail(count).reset_index(drop=True)
 
@@ -402,9 +406,9 @@ def detect_pole_flag_breakout(bars):
     reverses on the next bar (a real, common failure mode -- see the RRR
     example from earlier testing) no longer counts as a breakout."""
     sustain_bars = bars.iloc[-BREAKOUT_SUSTAIN_BARS:]
-    flag_window = bars.iloc[-(5 + BREAKOUT_SUSTAIN_BARS):-BREAKOUT_SUSTAIN_BARS]
-    pole_start = POLE_LOOKBACK_BARS + 5 + BREAKOUT_SUSTAIN_BARS
-    pole_window = bars.iloc[-pole_start:-(5 + BREAKOUT_SUSTAIN_BARS)] if len(bars) >= pole_start else bars
+    flag_window = bars.iloc[-(FLAG_WINDOW_BARS + BREAKOUT_SUSTAIN_BARS):-BREAKOUT_SUSTAIN_BARS]
+    pole_start = POLE_LOOKBACK_BARS + FLAG_WINDOW_BARS + BREAKOUT_SUSTAIN_BARS
+    pole_window = bars.iloc[-pole_start:-(FLAG_WINDOW_BARS + BREAKOUT_SUSTAIN_BARS)] if len(bars) >= pole_start else bars
 
     pole_low = pole_window["low"].min()
     pole_high = pole_window["high"].max()
