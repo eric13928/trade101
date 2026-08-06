@@ -525,8 +525,17 @@ def check_entry(code, ctx=None):
     # Required: each measures something genuinely independent (setup shape,
     # real participation, the most-watched intraday level, prior overhead
     # supply, and actual buy/sell aggression). All must pass.
+    #
+    # structure intentionally does NOT require flag_ok (the retrace-percentage
+    # check): that math is unstable when the pole itself is small (a normal
+    # pullback can read as 100%+ retrace purely because the denominator --
+    # the pole's own tiny range -- is tiny too). The 2-bar sustained breakout
+    # requirement already does the real work of filtering out false breakouts;
+    # once price has reclaimed and HELD above the flag high, how deep an
+    # earlier dip in the flag window was matters less than that. flag_ok is
+    # still computed and shown for context, just not blocking.
     required_checks = {
-        "structure": structure["pole_ok"] and structure["flag_ok"] and structure["breakout"],
+        "structure": structure["pole_ok"] and structure["breakout"],
         "volume": volume_ok,
         "vwap": vwap_ok,
         "levels": levels_ok,
