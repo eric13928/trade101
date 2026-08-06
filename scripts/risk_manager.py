@@ -12,7 +12,7 @@ import os
 import sys
 from datetime import date, datetime
 
-from moomoo import OpenQuoteContext, RET_OK, KLType, AuType
+from moomoo import OpenQuoteContext, RET_OK, KLType, AuType, SubType
 
 if sys.platform == "win32":
     try:
@@ -121,13 +121,21 @@ def calculate_structural_stop(code, lookback_bars=15, buffer_atr_mult=0.5, ktype
     stock's own recent volatility (ATR) rather than a flat cents/percent
     amount, so quiet stocks get a tight buffer and volatile ones get a wider
     one -- both proportionate to what's actually normal noise for that stock.
-    Pass an existing ctx to reuse one connection across many tickers."""
+    Pass an existing ctx to reuse one connection across many tickers.
+
+    Uses moomoo's LIVE subscription-based kline (subscribe + get_cur_kline),
+    NOT request_history_kline -- confirmed via live testing that
+    request_history_kline returns stale data (~1 year behind real-time) in
+    this environment. Same bug and same fix as entry_signal.fetch_bars()."""
     owns_ctx = ctx is None
     if owns_ctx:
         ctx = OpenQuoteContext(host="127.0.0.1", port=11111)
-    ret, df, _page_key = ctx.request_history_kline(
-        code, start=None, end=None, ktype=ktype, autype=AuType.QFQ, max_count=lookback_bars + 1
-    )
+    sub_ret, sub_err = ctx.subscribe([code], [SubType.K_1M])
+    if sub_ret != RET_OK:
+        if owns_ctx:
+            ctx.close()
+        raise RuntimeError(f"Could not subscribe to {code} to compute stop: {sub_err}")
+    ret, df = ctx.get_cur_kline(code, lookback_bars + 1, ktype, AuType.QFQ)
     if owns_ctx:
         ctx.close()
     if ret != RET_OK or df is None or len(df) < 2:

@@ -55,7 +55,7 @@ import argparse
 import sys
 
 import pandas as pd
-from moomoo import OpenQuoteContext, RET_OK, KLType, AuType, Session
+from moomoo import OpenQuoteContext, RET_OK, KLType, AuType, Session, SubType
 
 import flow_confirm
 
@@ -105,19 +105,29 @@ MARKET_SESSIONS = {
 
 
 def fetch_bars(code, ctx):
-    """Single fetch covering pre-market through now -- extended_time+ALL is a
-    superset of the plain regular-session query, so this serves both the
-    indicator calculations (which use the regular-session subset, see
-    regular_session_bars()) and the premarket/opening-range level check,
-    instead of hitting the API twice for the same ticker.
+    """Uses moomoo's LIVE subscription-based kline (subscribe + get_cur_kline)
+    -- NOT request_history_kline, which was confirmed via live testing to
+    return stale, disconnected data (~1 year behind real-time) in this
+    environment, while get_cur_kline (after subscribing) matches genuine
+    live snapshot prices. This was a serious bug: every indicator in this
+    module had been evaluating stale data regardless of what time of day
+    was scanned -- explains why nothing ever confirmed in earlier testing.
 
-    Does NOT pass an explicit date (see compute_key_levels' note below for
-    why): this environment's system clock and moomoo's actual market-data
-    timeline disagree, so "today" is derived from the data itself."""
-    ret, df, _page_key = ctx.request_history_kline(
-        code, start=None, end=None, ktype=KLType.K_1M, autype=AuType.QFQ,
-        max_count=1000, extended_time=True, session=Session.ALL,
-    )
+    subscribe() is idempotent (safe to call even if already subscribed,
+    won't double-charge quota) and backfills the current session's bars,
+    not just future ticks from the moment of subscribing. Extended-hours
+    (pre-market) is only supported for US tickers per moomoo's own SDK docs
+    ("only for subscribing US stocks") -- HK gets regular-session-only live
+    data, consistent with what we already knew about HK's session model."""
+    market = code.split(".")[0] if "." in code else "US"
+    if market == "US":
+        ret, err = ctx.subscribe([code], [SubType.K_1M], extended_time=True, session=Session.ALL)
+    else:
+        ret, err = ctx.subscribe([code], [SubType.K_1M])
+    if ret != RET_OK:
+        return None
+
+    ret, df = ctx.get_cur_kline(code, 1000, KLType.K_1M, AuType.QFQ)
     if ret != RET_OK or df is None or df.empty:
         return None
     return df.reset_index(drop=True)
