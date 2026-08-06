@@ -5,7 +5,7 @@ instead of a single one-shot scan -- so a candidate whose pattern
 completes at 9:44 gets caught close to 9:44, not whenever we happen to
 run signal_engine.py next.
 
-Runs in bounded chunks (default ~8 min, under the 10-min tool timeout).
+Runs in bounded chunks (default ~2 min, well under the 10-min tool timeout).
 For longer monitoring windows, re-invoke this script again -- it persists
 which tickers have already been alerted (data/alerted_tickers.json) so
 re-launching doesn't spam duplicate alerts for the same confirmed signal.
@@ -80,7 +80,7 @@ def print_alert(ticker, reason, result, ctx, config):
     print("=" * 70)
 
 
-def run_monitor(market="US", duration_seconds=480, check_pacing=CHECK_PACING_SECONDS,
+def run_monitor(market="US", duration_seconds=120, check_pacing=CHECK_PACING_SECONDS,
                 candidate_refresh=CANDIDATE_REFRESH_SECONDS):
     config = risk_manager.load_config()
     alerted = load_alerted()
@@ -139,7 +139,7 @@ def run_monitor(market="US", duration_seconds=480, check_pacing=CHECK_PACING_SEC
 if __name__ == "__main__":
     parser = argparse.ArgumentParser(description="Continuous entry-signal monitoring loop")
     parser.add_argument("--market", default="US", choices=["US", "HK"])
-    parser.add_argument("--duration-seconds", type=int, default=480)
+    parser.add_argument("--duration-seconds", type=int, default=120)
     parser.add_argument("--check-pacing", type=float, default=CHECK_PACING_SECONDS)
     parser.add_argument("--candidate-refresh", type=int, default=CANDIDATE_REFRESH_SECONDS)
     parser.add_argument("--reset-alerts", action="store_true",
