@@ -76,8 +76,7 @@ FLAG_MAX_RETRACE_PCT = 65.0  # loosened from 50 -- a longer flag window naturall
                              # wobble before it's genuinely broken, not reversing
 BREAKOUT_SUSTAIN_BARS = 2    # breakout must hold for this many consecutive closed bars, not just one (false-breakout guard)
 EMA_PERIOD = 9
-RVOL_LOOKBACK = 20
-RVOL_MIN_MULT = 1.5          # breakout bar must have >=1.5x recent avg volume
+RVOL_MIN_MULT = 1.5          # breakout bar must have >=1.5x moomoo's own volume_ratio baseline
 MACD_FAST, MACD_SLOW, MACD_SIGNAL = 12, 26, 9
 RSI_PERIOD = 14
 RSI_OVERBOUGHT_CEILING = 75  # skip if already this extended -- more likely to snap back than continue
@@ -94,7 +93,7 @@ RECENT_CHANGE_TARGET_BARS = 3  # distinguishes "still actively moving" from "mov
 # MACD/RSI/Bollinger-squeeze-lookback need real warm-up to be meaningful, not
 # just the bare minimum bars -- pull extra history for these, structure/volume
 # checks still just look at the tail end of the same fetch.
-BARS_NEEDED = max(POLE_LOOKBACK_BARS + RVOL_LOOKBACK + 5, (MACD_SLOW + MACD_SIGNAL) * 3,
+BARS_NEEDED = max(POLE_LOOKBACK_BARS + 5, (MACD_SLOW + MACD_SIGNAL) * 3,
                   BOLL_PERIOD + BOLL_SQUEEZE_LOOKBACK)
 
 # Regular-session time windows per market, in each exchange's own local time
@@ -330,6 +329,22 @@ def check_overhead_resistance(profile, current_price, zone_pct=OVERHEAD_ZONE_PCT
     }
 
 
+def fetch_volume_ratio(code, ctx):
+    """Relative volume, sourced from moomoo's own server-side snapshot field
+    (volume_ratio) instead of a hand-rolled bar comparison. Verified live:
+    this is a genuine time-of-day-aware ratio (moomoo/futu's standard
+    "volume ratio" concept, matching values shown in their own app) computed
+    against moomoo's own historical data -- not the last-bar-vs-recent-20-bar
+    comparison this used to do, which was unreliable because the "last bar"
+    is often still mid-formation (partial volume) when the check runs.
+    Returns None if the snapshot call fails or the field is missing."""
+    ret, snap = ctx.get_market_snapshot([code])
+    if ret != RET_OK or snap is None or snap.empty:
+        return None
+    value = snap.iloc[0].get("volume_ratio")
+    return float(value) if value is not None and value == value else None  # NaN check
+
+
 def compute_vwap(bars):
     """Anchored to whatever bars we have (not necessarily full session open) --
     a reasonable approximation, not exact session VWAP if run mid-day on a
@@ -470,10 +485,8 @@ def check_entry(code, ctx=None):
     vwap = compute_vwap(bars)
     vwap_ok = vwap is not None and structure["current_price"] > vwap
 
-    recent_vol = bars["volume"].iloc[-1]
-    avg_vol = bars["volume"].iloc[-(RVOL_LOOKBACK + 1):-1].mean()
-    rvol = recent_vol / avg_vol if avg_vol else 0
-    volume_ok = rvol >= RVOL_MIN_MULT
+    rvol = fetch_volume_ratio(code, ctx)
+    volume_ok = rvol is not None and rvol >= RVOL_MIN_MULT
 
     macd_line, macd_signal = compute_macd(bars["close"])
     momentum_ok = macd_line > macd_signal
@@ -543,7 +556,7 @@ def check_entry(code, ctx=None):
             "flag_high": structure["flag_high"],
             "ema9": round(float(ema), 4),
             "vwap": round(float(vwap), 4) if vwap is not None else None,
-            "rvol": round(float(rvol), 2),
+            "rvol": round(rvol, 2) if rvol is not None else None,
             "macd": round(macd_line, 4),
             "macd_signal": round(macd_signal, 4),
             "rsi": round(rsi, 1),
