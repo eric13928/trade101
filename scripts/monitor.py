@@ -48,12 +48,17 @@ def save_alerted(alerted):
         json.dump(sorted(alerted), f)
 
 
-def get_candidates(market, keywords):
+def get_candidates(market, keywords, ctx):
     hits, earnings_hits, rating_hits = news_scanner.scan(keywords, resolve_tickers=True, market=market)
     catalysts = news_scanner.confirmed_candidates(hits, earnings_hits, rating_hits)
     if market == "US":
         for row in movers_scanner.pre_market_movers():
             catalysts.setdefault(row["ticker"], f"pre-market mover ({row['pre_market_change_pct']:+.1f}%, no known catalyst)")
+    before = len(catalysts)
+    catalysts = news_scanner.filter_tradeable_candidates(catalysts, ctx)
+    dropped = before - len(catalysts)
+    if dropped:
+        print(f"  (dropped {dropped} penny/OTC candidate(s))")
     return catalysts
 
 
@@ -84,7 +89,7 @@ def run_monitor(market="US", duration_seconds=480, check_pacing=CHECK_PACING_SEC
 
     print(f"Starting monitor chunk: market={market}  duration={duration_seconds}s  "
           f"already-alerted={len(alerted)} ticker(s) from prior chunks")
-    candidates = get_candidates(market, news_scanner.DEFAULT_KEYWORDS)
+    candidates = get_candidates(market, news_scanner.DEFAULT_KEYWORDS, ctx)
     print(f"Initial candidate list: {len(candidates)} ticker(s)")
     last_refresh = time.time()
     new_alerts = []
@@ -97,7 +102,7 @@ def run_monitor(market="US", duration_seconds=480, check_pacing=CHECK_PACING_SEC
 
         if time.time() - last_refresh > candidate_refresh:
             print("Refreshing candidate list...")
-            candidates = get_candidates(market, news_scanner.DEFAULT_KEYWORDS)
+            candidates = get_candidates(market, news_scanner.DEFAULT_KEYWORDS, ctx)
             last_refresh = time.time()
             print(f"Candidate list now: {len(candidates)} ticker(s)")
 

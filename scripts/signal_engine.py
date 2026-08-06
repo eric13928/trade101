@@ -52,6 +52,8 @@ def run(keywords=None, market="US"):
     print(f"TRADING STATUS: {'OK TO TRADE' if can_trade else 'BLOCKED'} — {cadence_reason}")
     print("=" * 70 + "\n")
 
+    ctx = OpenQuoteContext(host="127.0.0.1", port=11111)
+
     print(f"Scanning news + earnings + analyst ratings for catalysts ({market})...")
     hits, earnings_hits, rating_hits = news_scanner.scan(keywords, resolve_tickers=True, market=market)
     catalysts = news_scanner.confirmed_candidates(hits, earnings_hits, rating_hits)
@@ -65,9 +67,14 @@ def run(keywords=None, market="US"):
     else:
         print(f"Skipping pre-market movers -- moomoo's mover-ranking API is US-only, no {market} equivalent available.")
 
+    before = len(catalysts)
+    catalysts = news_scanner.filter_tradeable_candidates(catalysts, ctx)
+    dropped = before - len(catalysts)
+    if dropped:
+        print(f"Dropped {dropped} penny/OTC candidate(s).")
+
     print(f"Running 1-minute entry-signal check on {len(catalysts)} candidate(s) "
           f"(6 required checks + 4 informational-only)...")
-    ctx = OpenQuoteContext(host="127.0.0.1", port=11111)
 
     confirmed = []
     watching = []
