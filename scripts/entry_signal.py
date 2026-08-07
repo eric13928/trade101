@@ -418,10 +418,16 @@ def compute_key_levels(full_bars, current_price, market="US", trading_day=None):
     }
 
 
-def detect_pole_flag_breakout(bars):
+def detect_pole_flag_breakout(bars, pole_min_pct=POLE_MIN_PCT, flag_max_retrace_pct=FLAG_MAX_RETRACE_PCT):
     """Returns dict describing whether the last bars form pole->flag->breakout,
     using only the shape of the bars -- no volume/trend confirmation here,
     that's layered on separately in check_entry().
+
+    pole_min_pct/flag_max_retrace_pct are overridable (default to the
+    small-cap-calibrated module constants) so other callers -- e.g. a
+    large-cap pole watcher, where a "big" move is a fraction of a percent,
+    not 2% -- can reuse this same shape-detection logic with their own scale
+    instead of duplicating it.
 
     False-breakout guard: flag_high is computed from a window that EXCLUDES
     the most recent BREAKOUT_SUSTAIN_BARS bars, and breakout only counts as
@@ -447,9 +453,9 @@ def detect_pole_flag_breakout(bars):
 
     return {
         "pole_pct": round(float(pole_pct), 2),
-        "pole_ok": pole_pct >= POLE_MIN_PCT,
+        "pole_ok": pole_pct >= pole_min_pct,
         "retrace_pct": round(float(retrace_pct), 2),
-        "flag_ok": retrace_pct <= FLAG_MAX_RETRACE_PCT,
+        "flag_ok": retrace_pct <= flag_max_retrace_pct,
         "flag_high": round(float(flag_high), 4),
         "current_price": round(float(current_price), 4),
         "breakout": breakout_sustained,
