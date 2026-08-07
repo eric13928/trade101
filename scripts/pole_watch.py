@@ -136,7 +136,9 @@ def compute_pole_analysis(ticker, reason, ctx):
         "\n" + "-" * 70,
         f">>> POLE FORMED: {ticker} ({lean}) <<<",
         f"  catalyst: {reason}",
-        f"  pole={structure['pole_pct']}%  price={price}  watch level (flag high)={structure['flag_high']}",
+        f"  as of {structure['current_time']}: price={price}  watch level (flag high)={structure['flag_high']}",
+        f"  pole: {structure['pole_pct']}%  from ${structure['pole_low']} @ {structure['pole_low_time']}  "
+        f"to ${structure['pole_high']} @ {structure['pole_high_time']}",
         f"  VWAP={round(vwap, 4) if vwap is not None else 'n/a'} ({'above' if above_vwap else 'below'})  "
         f"EMA9={round(float(ema), 4)} ({'above' if above_ema else 'below'})",
         f"  MACD={round(macd_line, 4)} vs signal={round(macd_signal, 4)} ({'rising' if macd_rising else 'falling'})  "

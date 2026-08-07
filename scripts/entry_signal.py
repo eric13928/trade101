@@ -443,17 +443,25 @@ def detect_pole_flag_breakout(bars, pole_min_pct=POLE_MIN_PCT, flag_max_retrace_
     pole_low = pole_window["low"].min()
     pole_high = pole_window["high"].max()
     pole_pct = (pole_high - pole_low) / pole_low * 100 if pole_low else 0
+    pole_low_time = pole_window.loc[pole_window["low"].idxmin(), "time_key"]
+    pole_high_time = pole_window.loc[pole_window["high"].idxmax(), "time_key"]
 
     flag_high = flag_window["high"].max()
     flag_low = flag_window["low"].min()
     retrace_pct = (pole_high - flag_low) / (pole_high - pole_low) * 100 if pole_high > pole_low else 100
 
     current_price = bars["close"].iloc[-1]
+    current_time = bars["time_key"].iloc[-1]
     breakout_sustained = bool((sustain_bars["close"] > flag_high).all())
 
     return {
         "pole_pct": round(float(pole_pct), 2),
         "pole_ok": pole_pct >= pole_min_pct,
+        "pole_low": round(float(pole_low), 4),
+        "pole_high": round(float(pole_high), 4),
+        "pole_low_time": pole_low_time,
+        "pole_high_time": pole_high_time,
+        "current_time": current_time,
         "retrace_pct": round(float(retrace_pct), 2),
         "flag_ok": retrace_pct <= flag_max_retrace_pct,
         "flag_high": round(float(flag_high), 4),
