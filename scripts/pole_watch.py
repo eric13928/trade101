@@ -144,6 +144,19 @@ def compute_pole_analysis(ticker, reason, ctx):
     lean = "leans bullish" if sum([above_vwap, above_ema, macd_rising, rsi < 70]) >= 3 else \
            "mixed signals" if sum([above_vwap, above_ema, macd_rising]) >= 1 else "leans weak"
 
+    # Objective, threshold-based cautions -- explicitly tagged so they're never
+    # buried in the raw numbers. RSI/RVOL thresholds match what's been used all
+    # day when talking through these alerts (overbought >70, thin volume <1x).
+    cautions = []
+    if rsi >= 70:
+        cautions.append(f"RSI {round(rsi, 1)} is overbought -- stretched, more prone to pulling back")
+    elif rsi <= 30:
+        cautions.append(f"RSI {round(rsi, 1)} is oversold")
+    if rvol is not None and rvol < 1.0:
+        cautions.append(f"RVOL {round(rvol, 2)}x is BELOW average -- move isn't backed by real volume")
+    if macd_line < 0:
+        cautions.append(f"MACD is negative ({round(macd_line, 4)}) -- actual negative momentum, not just cooling")
+
     lines = [
         "\n" + "-" * 70,
         f">>> POLE FORMED: {ticker} ({name}) ({lean}) <<<",
@@ -155,6 +168,7 @@ def compute_pole_analysis(ticker, reason, ctx):
         f"EMA9={round(float(ema), 4)} ({'above' if above_ema else 'below'})",
         f"  MACD={round(macd_line, 4)} vs signal={round(macd_signal, 4)} ({'rising' if macd_rising else 'falling'})  "
         f"RSI={round(rsi, 1)}  RVOL={round(rvol, 2) if rvol is not None else 'n/a'}x",
+    ] + [f"  ⚠ CAUTION: {c}" for c in cautions] + [
         "  ^ no auto-confirmation -- this is early-stage, for us to look at together, not a signal to act on alone",
         "-" * 70,
     ]
