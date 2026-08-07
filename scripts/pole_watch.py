@@ -52,13 +52,12 @@ CANDIDATE_REFRESH_SECONDS = 300
 
 MIN_MARKET_CAP = 2_000_000_000  # $2B -- mid-cap floor and up (not a price band, an actual cap check)
 POLE_MIN_PCT_LARGECAP = 0.5     # first guess, much lower than entry_signal's 2% small-cap default -- expect to tune
-RE_ALERT_GROWTH_MULT = 1.5      # only re-alert an already-alerted ticker if the pole has grown at least 50% bigger
 
 
 def load_alerted():
     if os.path.exists(ALERTED_FILE):
         with open(ALERTED_FILE, "r", encoding="utf-8") as f:
-            return json.load(f)  # ticker -> last pole_pct alerted
+            return json.load(f)  # ticker -> window_key of the pole last alerted
     return {}
 
 
@@ -172,7 +171,14 @@ def compute_pole_analysis(ticker, reason, ctx):
         "  ^ no auto-confirmation -- this is early-stage, for us to look at together, not a signal to act on alone",
         "-" * 70,
     ]
-    return {"pole_pct": structure["pole_pct"], "text": "\n".join(lines)}
+    # Identifies the specific bars defining THIS pole, not just its size --
+    # dedup keys off this instead of pole_pct growth, so a second, distinct
+    # leg (failed first pole, pullback, then a fresh move of similar or even
+    # smaller size) still alerts instead of being silently swallowed by a
+    # "must be 50% bigger than last time" rule that only made sense for the
+    # same move continuing to extend.
+    window_key = f"{structure['pole_low_time']}|{structure['pole_high_time']}"
+    return {"pole_pct": structure["pole_pct"], "window_key": window_key, "text": "\n".join(lines)}
 
 
 def run_pole_watch(market="US", duration_seconds=120, check_pacing=CHECK_PACING_SECONDS,
@@ -211,11 +217,10 @@ def run_pole_watch(market="US", duration_seconds=120, check_pacing=CHECK_PACING_
                 continue
             checked_this_pass += 1
             if analysis is not None:
-                pole_pct = analysis["pole_pct"]
-                last_alerted = alerted.get(ticker)
-                if last_alerted is None or pole_pct >= last_alerted * RE_ALERT_GROWTH_MULT:
+                window_key = analysis["window_key"]
+                if alerted.get(ticker) != window_key:
                     print(analysis["text"])
-                    alerted[ticker] = pole_pct
+                    alerted[ticker] = window_key
                     new_alerts.append(ticker)
                     save_alerted(alerted)
             time.sleep(check_pacing)
