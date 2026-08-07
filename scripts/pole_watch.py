@@ -9,11 +9,15 @@ the entry isn't a chase. There is no auto-confirm here -- once alerted, the
 point is to look at the live indicator picture together and make the call,
 not wait for a checklist to turn green on its own.
 
-Candidates: mid/large-cap US stocks (real market-cap floor, not just a
-price band) with a genuine catalyst -- an earnings beat or an analyst
-rating upgrade. Same catalyst-first theme as the rest of this project,
-just recalibrated: large-cap moves are much smaller than the small-cap
-system was built for, so the pole threshold here is far lower than
+Candidates: mid/large-cap US stocks -- a real $2B+ market-cap floor, AND
+a $10-$50 price band -- with a genuine catalyst (earnings beat or analyst
+rating upgrade). The price band was added after RGA (a real $2B+ company)
+showed up at $245/share, needing ~$8-10k to size a single position
+properly -- more than the account this is built around. Market cap alone
+doesn't keep share price in a tradeable range, so both filters apply
+together. Same catalyst-first theme as the rest of this project, just
+recalibrated: large-cap moves are much smaller than the small-cap system
+was built for, so the pole threshold here is far lower than
 entry_signal.py's 2% default -- starting at 0.5%, a first guess that will
 likely need adjusting once we see real data, same as every other threshold
 in this project so far.
@@ -52,6 +56,8 @@ CANDIDATE_REFRESH_SECONDS = 300
 
 MIN_MARKET_CAP = 2_000_000_000  # $2B -- mid-cap floor and up (not a price band, an actual cap check)
 POLE_MIN_PCT_LARGECAP = 0.5     # first guess, much lower than entry_signal's 2% small-cap default -- expect to tune
+MIN_PRICE = 10.0   # same $10-$50 band as premarket_scan.py -- keeps share prices affordable enough to
+MAX_PRICE = 50.0   # size a real position without needing $5k+ per trade (RGA at $245/share needed ~$8-10k)
 
 
 def load_alerted():
@@ -90,20 +96,33 @@ def get_midlargecap_candidates(market, ctx):
     codes = list(candidates.keys())
     ret, snap = ctx.get_market_snapshot(codes)
     cap_by_code = {}
+    price_by_code = {}
     if ret == RET_OK and snap is not None and not snap.empty:
         for _, row in snap.iterrows():
-            cap_by_code[row.get("code")] = row.get("total_market_val")
+            code = row.get("code")
+            cap_by_code[code] = row.get("total_market_val")
+            price_by_code[code] = row.get("last_price")
 
-    # total_market_val comes back in the ticker's own local currency (HKD for
-    # HK.*, not USD) -- MIN_MARKET_CAP is a USD figure, so convert it to local
-    # currency before comparing, same fix as the price-band bug found earlier.
+    # total_market_val and last_price both come back in the ticker's own local
+    # currency (HKD for HK.*, not USD) -- MIN_MARKET_CAP/MIN_PRICE/MAX_PRICE
+    # are USD figures, so convert before comparing, same fix as the
+    # price-band bug found earlier.
     local_min_cap = risk_manager.usd_to_local(MIN_MARKET_CAP, market)
+    local_min_price = risk_manager.usd_to_local(MIN_PRICE, market)
+    local_max_price = risk_manager.usd_to_local(MAX_PRICE, market)
 
-    return {
-        code: reason for code, reason in candidates.items()
-        if cap_by_code.get(code) is not None and cap_by_code[code] == cap_by_code[code]  # drop NaN
-        and cap_by_code[code] >= local_min_cap
-    }
+    filtered = {}
+    for code, reason in candidates.items():
+        cap = cap_by_code.get(code)
+        price = price_by_code.get(code)
+        if cap is None or cap != cap:  # drop NaN
+            continue
+        if cap < local_min_cap:
+            continue
+        if price is None or price < local_min_price or price > local_max_price:
+            continue
+        filtered[code] = reason
+    return filtered
 
 
 def compute_pole_analysis(ticker, reason, ctx):
