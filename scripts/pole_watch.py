@@ -59,17 +59,28 @@ POLE_MIN_PCT_LARGECAP = 0.5     # first guess, much lower than entry_signal's 2%
 MIN_PRICE = 10.0   # same $10-$50 band as premarket_scan.py -- keeps share prices affordable enough to
 MAX_PRICE = 50.0   # size a real position without needing $5k+ per trade (RGA at $245/share needed ~$8-10k)
 
+# Second, parallel detector -- pole detection only looks at ONE 30-min window
+# (10 bars @ 3-min) for a sharp burst, which means a stock that's quietly
+# grinding higher over hours -- never one big move, just steady higher lows --
+# is invisible to it. This catches that case instead: cumulative gain over a
+# much longer window, plus price holding above a RISING longer EMA (not just
+# above a flat one -- confirms it's a genuine trend, not a lucky endpoint).
+TREND_LOOKBACK_BARS = 40   # 2 hours @ 3-min bars -- meaningfully longer than the pole's 30-min window
+TREND_MIN_PCT = 2.0        # cumulative gain over that window -- first guess, expect to tune like everything else
+TREND_EMA_PERIOD = 20      # longer than entry_signal's EMA9 -- appropriate for a slower, multi-hour trend check
+TREND_ALERTED_FILE = os.path.join(os.path.dirname(__file__), "data", "pole_watch_trend_alerted.json")
 
-def load_alerted():
-    if os.path.exists(ALERTED_FILE):
-        with open(ALERTED_FILE, "r", encoding="utf-8") as f:
-            return json.load(f)  # ticker -> window_key of the pole last alerted
+
+def load_alerted(path=ALERTED_FILE):
+    if os.path.exists(path):
+        with open(path, "r", encoding="utf-8") as f:
+            return json.load(f)  # ticker -> window_key of the pole/trend last alerted
     return {}
 
 
-def save_alerted(alerted):
-    os.makedirs(os.path.dirname(ALERTED_FILE), exist_ok=True)
-    with open(ALERTED_FILE, "w", encoding="utf-8") as f:
+def save_alerted(alerted, path=ALERTED_FILE):
+    os.makedirs(os.path.dirname(path), exist_ok=True)
+    with open(path, "w", encoding="utf-8") as f:
         json.dump(alerted, f)
 
 
@@ -125,17 +136,22 @@ def get_midlargecap_candidates(market, ctx):
     return filtered
 
 
-def compute_pole_analysis(ticker, reason, ctx):
+def fetch_candidate_bars(ticker, ctx):
+    """Shared by both detectors (pole + trend) so a candidate's bars are
+    only fetched once per pass, not twice."""
+    full_bars = entry_signal.fetch_bars(ticker, ctx, granularity="3M")
+    if full_bars is None:
+        return None
+    trading_day = entry_signal.select_trading_day(full_bars, "US")
+    return entry_signal.regular_session_bars(full_bars, market="US", trading_day=trading_day)
+
+
+def compute_pole_analysis(ticker, reason, ctx, bars):
     """The 'we discuss it together' piece -- pulls the live indicator
     picture and builds a plain-language synthesis, not just raw numbers.
     Returns {'pole_pct': ..., 'text': ...} or None if no pole (or not
     enough data) right now. Does NOT print -- the caller decides whether
     this is worth alerting on (dedup) before printing anything."""
-    full_bars = entry_signal.fetch_bars(ticker, ctx, granularity="3M")
-    if full_bars is None:
-        return None
-    trading_day = entry_signal.select_trading_day(full_bars, "US")
-    bars = entry_signal.regular_session_bars(full_bars, market="US", trading_day=trading_day)
     if bars is None:
         return None
 
@@ -200,9 +216,81 @@ def compute_pole_analysis(ticker, reason, ctx):
     return {"pole_pct": structure["pole_pct"], "window_key": window_key, "text": "\n".join(lines)}
 
 
+def compute_trend_analysis(ticker, reason, ctx, bars):
+    """The 'quiet grind' detector -- complementary to compute_pole_analysis,
+    not a replacement. Catches a stock that's been steadily climbing over
+    hours without ever having one single 30-min window sharp enough to
+    register as a pole. Two conditions, both required: cumulative gain over
+    TREND_LOOKBACK_BARS crosses TREND_MIN_PCT, AND the longer EMA itself is
+    rising (not just price sitting above a flat/falling one) -- confirms a
+    genuine sustained trend, not a lucky endpoint comparison."""
+    if bars is None or len(bars) < TREND_LOOKBACK_BARS + TREND_EMA_PERIOD:
+        return None
+
+    window = bars.iloc[-TREND_LOOKBACK_BARS:]
+    start_price = float(window["close"].iloc[0])
+    start_time = window["time_key"].iloc[0]
+    current_price = float(bars["close"].iloc[-1])
+    current_time = bars["time_key"].iloc[-1]
+    if not start_price:
+        return None
+    cumulative_pct = (current_price - start_price) / start_price * 100
+    if cumulative_pct < TREND_MIN_PCT:
+        return None
+
+    ema_now = float(entry_signal.compute_ema(bars["close"], period=TREND_EMA_PERIOD))
+    ema_prior = float(entry_signal.compute_ema(bars["close"].iloc[:-TREND_LOOKBACK_BARS], period=TREND_EMA_PERIOD))
+    ema_rising = ema_now > ema_prior
+    above_ema = current_price > ema_now
+    if not (ema_rising and above_ema):
+        return None
+
+    vwap = entry_signal.compute_vwap(bars)
+    macd_line, macd_signal = entry_signal.compute_macd(bars["close"])
+    rsi = entry_signal.compute_rsi(bars["close"])
+    rvol = entry_signal.fetch_volume_ratio(ticker, ctx)
+    above_vwap = vwap is not None and current_price > vwap
+    macd_rising = macd_line > macd_signal
+
+    name = ticker
+    ret, snap = ctx.get_market_snapshot([ticker])
+    if ret == RET_OK and snap is not None and not snap.empty:
+        name = snap.iloc[0].get("name") or ticker
+
+    lean = "leans bullish" if sum([above_vwap, macd_rising, rsi < 70]) >= 2 else "mixed signals"
+
+    cautions = []
+    if rsi >= 70:
+        cautions.append(f"RSI {round(rsi, 1)} is overbought -- stretched, more prone to pulling back")
+    elif rsi <= 30:
+        cautions.append(f"RSI {round(rsi, 1)} is oversold")
+    if rvol is not None and rvol < 1.0:
+        cautions.append(f"RVOL {round(rvol, 2)}x is BELOW average -- move isn't backed by real volume")
+    if macd_line < 0:
+        cautions.append(f"MACD is negative ({round(macd_line, 4)}) -- actual negative momentum, not just cooling")
+
+    lines = [
+        "\n" + "~" * 70,
+        f"~~~ GRINDING UPTREND: {ticker} ({name}) ({lean}) ~~~",
+        f"  catalyst: {reason}",
+        f"  as of {current_time}: price={round(current_price, 4)}",
+        f"  trend: {round(cumulative_pct, 2)}%  from ${round(start_price, 4)} @ {start_time}  "
+        f"(EMA{TREND_EMA_PERIOD} rising: {round(ema_prior, 4)} -> {round(ema_now, 4)})",
+        f"  VWAP={round(vwap, 4) if vwap is not None else 'n/a'} ({'above' if above_vwap else 'below'})",
+        f"  MACD={round(macd_line, 4)} vs signal={round(macd_signal, 4)} ({'rising' if macd_rising else 'falling'})  "
+        f"RSI={round(rsi, 1)}  RVOL={round(rvol, 2) if rvol is not None else 'n/a'}x",
+    ] + [f"  ⚠ CAUTION: {c}" for c in cautions] + [
+        "  ^ no sharp pole here -- a steady multi-hour climb instead, caught by a different check",
+        "~" * 70,
+    ]
+    window_key = f"{start_time}|{current_time.split(' ')[0]}"  # same start bar + same trading day = same trend, not re-alerted every pass
+    return {"text": "\n".join(lines), "window_key": window_key}
+
+
 def run_pole_watch(market="US", duration_seconds=120, check_pacing=CHECK_PACING_SECONDS,
                    candidate_refresh=CANDIDATE_REFRESH_SECONDS):
-    alerted = load_alerted()
+    alerted = load_alerted(ALERTED_FILE)
+    trend_alerted = load_alerted(TREND_ALERTED_FILE)
     start = time.time()
     ctx = OpenQuoteContext(host="127.0.0.1", port=11111)
 
@@ -230,18 +318,27 @@ def run_pole_watch(market="US", duration_seconds=120, check_pacing=CHECK_PACING_
             if time.time() - start >= duration_seconds:
                 break
             try:
-                analysis = compute_pole_analysis(ticker, reason, ctx)
+                bars = fetch_candidate_bars(ticker, ctx)
+                pole_result = compute_pole_analysis(ticker, reason, ctx, bars)
+                trend_result = compute_trend_analysis(ticker, reason, ctx, bars)
             except Exception as e:
                 print(f"  {ticker}: error ({e})")
                 continue
             checked_this_pass += 1
-            if analysis is not None:
-                window_key = analysis["window_key"]
+            if pole_result is not None:
+                window_key = pole_result["window_key"]
                 if alerted.get(ticker) != window_key:
-                    print(analysis["text"])
+                    print(pole_result["text"])
                     alerted[ticker] = window_key
                     new_alerts.append(ticker)
-                    save_alerted(alerted)
+                    save_alerted(alerted, ALERTED_FILE)
+            if trend_result is not None:
+                window_key = trend_result["window_key"]
+                if trend_alerted.get(ticker) != window_key:
+                    print(trend_result["text"])
+                    trend_alerted[ticker] = window_key
+                    new_alerts.append(ticker)
+                    save_alerted(trend_alerted, TREND_ALERTED_FILE)
             time.sleep(check_pacing)
 
         print(f"  (checked {checked_this_pass} candidate(s) this pass)")
@@ -250,7 +347,7 @@ def run_pole_watch(market="US", duration_seconds=120, check_pacing=CHECK_PACING_
 
     ctx.close()
     print(f"\nPole watch chunk complete after {pass_num} pass(es). "
-          f"{len(new_alerts)} new pole alert(s) this chunk: {new_alerts or 'none'}")
+          f"{len(new_alerts)} new alert(s) this chunk: {new_alerts or 'none'}")
     return new_alerts
 
 
@@ -264,6 +361,7 @@ if __name__ == "__main__":
                         help="Clear alerted-tickers memory before starting (e.g. for a new day)")
     args = parser.parse_args()
     if args.reset_alerts:
-        save_alerted({})
+        save_alerted({}, ALERTED_FILE)
+        save_alerted({}, TREND_ALERTED_FILE)
         print("Cleared pole-watch alerted memory.")
     run_pole_watch(args.market, args.duration_seconds, args.check_pacing, args.candidate_refresh)
