@@ -66,10 +66,14 @@ def is_premarket_now(ctx, market="US"):
     return data.get(field) in PREMARKET_STATES
 
 
+MIN_PRICE = 10.0  # this scanner's own band -- $2-$15 (news_scanner's default) is the small-cap day-trade band
+MAX_PRICE = 50.0  # from monitor.py/signal_engine.py, not the right fit here
+
+
 def get_catalyst_candidates(market, keywords, ctx):
     hits, earnings_hits, rating_hits = news_scanner.scan(keywords, resolve_tickers=True, market=market)
     catalysts = news_scanner.confirmed_candidates(hits, earnings_hits, rating_hits)
-    return news_scanner.filter_tradeable_candidates(catalysts, ctx)
+    return news_scanner.filter_tradeable_candidates(catalysts, ctx, min_price=MIN_PRICE, max_price=MAX_PRICE)
 
 
 def print_catalyst_alert(ticker, reason, ctx):
