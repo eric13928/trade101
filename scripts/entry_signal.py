@@ -107,7 +107,10 @@ MARKET_SESSIONS = {
 }
 
 
-def fetch_bars(code, ctx):
+FETCH_BARS_SUBTYPE = {"1M": (SubType.K_1M, KLType.K_1M), "3M": (SubType.K_3M, KLType.K_3M)}
+
+
+def fetch_bars(code, ctx, granularity="1M"):
     """Uses moomoo's LIVE subscription-based kline (subscribe + get_cur_kline)
     -- NOT request_history_kline, which was confirmed via live testing to
     return stale, disconnected data (~1 year behind real-time) in this
@@ -121,16 +124,23 @@ def fetch_bars(code, ctx):
     not just future ticks from the moment of subscribing. Extended-hours
     (pre-market) is only supported for US tickers per moomoo's own SDK docs
     ("only for subscribing US stocks") -- HK gets regular-session-only live
-    data, consistent with what we already knew about HK's session model."""
+    data, consistent with what we already knew about HK's session model.
+
+    granularity defaults to "1M" (the small-cap system's calibration, fast
+    moves need fast bars). "3M" is for the large-cap pole watcher, which
+    trades slower-moving, less noisy names -- the existing window sizes
+    (10-bar pole lookback, 9-period EMA, etc.) then cover 3x the calendar
+    time without needing separate recalibration."""
+    sub_type, kl_type = FETCH_BARS_SUBTYPE[granularity]
     market = code.split(".")[0] if "." in code else "US"
     if market == "US":
-        ret, err = ctx.subscribe([code], [SubType.K_1M], extended_time=True, session=Session.ALL)
+        ret, err = ctx.subscribe([code], [sub_type], extended_time=True, session=Session.ALL)
     else:
-        ret, err = ctx.subscribe([code], [SubType.K_1M])
+        ret, err = ctx.subscribe([code], [sub_type])
     if ret != RET_OK:
         return None
 
-    ret, df = ctx.get_cur_kline(code, 1000, KLType.K_1M, AuType.QFQ)
+    ret, df = ctx.get_cur_kline(code, 1000, kl_type, AuType.QFQ)
     if ret != RET_OK or df is None or df.empty:
         return None
     return df.reset_index(drop=True)

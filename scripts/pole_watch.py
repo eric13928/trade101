@@ -18,6 +18,13 @@ entry_signal.py's 2% default -- starting at 0.5%, a first guess that will
 likely need adjusting once we see real data, same as every other threshold
 in this project so far.
 
+Runs on 3-minute bars, not entry_signal.py's default 1-minute -- large/mid
+caps move slower and cleaner than the small caps that system was tuned
+for, and 1-minute noise was visibly showing up here (RSI/MACD flipping
+within minutes on real live data). The existing window sizes (10-bar pole
+lookback, 9-period EMA, etc.) are unchanged and now just cover 3x the
+calendar time, which fits the slower pace without needing new numbers.
+
 Runs in bounded chunks, loopable the same way as monitor.py and
 premarket_scan.py ("run the scan and repeat after its done").
 """
@@ -106,7 +113,7 @@ def compute_pole_analysis(ticker, reason, ctx):
     Returns {'pole_pct': ..., 'text': ...} or None if no pole (or not
     enough data) right now. Does NOT print -- the caller decides whether
     this is worth alerting on (dedup) before printing anything."""
-    full_bars = entry_signal.fetch_bars(ticker, ctx)
+    full_bars = entry_signal.fetch_bars(ticker, ctx, granularity="3M")
     if full_bars is None:
         return None
     trading_day = entry_signal.select_trading_day(full_bars, "US")
