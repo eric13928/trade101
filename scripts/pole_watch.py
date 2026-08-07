@@ -31,6 +31,7 @@ from moomoo import OpenQuoteContext, RET_OK
 
 import entry_signal
 import news_scanner
+import risk_manager
 
 if sys.platform == "win32":
     try:
@@ -76,7 +77,7 @@ def get_midlargecap_candidates(market, ctx):
             r["ticker"],
             f"analyst upgrade ({r['institution']}: {r['last_rating']} -> {r['rating']}, target ${r['target_price']})"
         )
-    candidates = {k: v for k, v in candidates.items() if k.startswith("US.")}
+    candidates = {k: v for k, v in candidates.items() if k.startswith(f"{market}.")}
     if not candidates:
         return candidates
 
@@ -87,10 +88,15 @@ def get_midlargecap_candidates(market, ctx):
         for _, row in snap.iterrows():
             cap_by_code[row.get("code")] = row.get("total_market_val")
 
+    # total_market_val comes back in the ticker's own local currency (HKD for
+    # HK.*, not USD) -- MIN_MARKET_CAP is a USD figure, so convert it to local
+    # currency before comparing, same fix as the price-band bug found earlier.
+    local_min_cap = risk_manager.usd_to_local(MIN_MARKET_CAP, market)
+
     return {
         code: reason for code, reason in candidates.items()
         if cap_by_code.get(code) is not None and cap_by_code[code] == cap_by_code[code]  # drop NaN
-        and cap_by_code[code] >= MIN_MARKET_CAP
+        and cap_by_code[code] >= local_min_cap
     }
 
 
@@ -198,7 +204,7 @@ def run_pole_watch(market="US", duration_seconds=120, check_pacing=CHECK_PACING_
 
 if __name__ == "__main__":
     parser = argparse.ArgumentParser(description="Mid/large-cap pole-stage alert + live indicator analysis")
-    parser.add_argument("--market", default="US", choices=["US"])
+    parser.add_argument("--market", default="US", choices=["US", "HK"])
     parser.add_argument("--duration-seconds", type=int, default=120)
     parser.add_argument("--check-pacing", type=float, default=CHECK_PACING_SECONDS)
     parser.add_argument("--candidate-refresh", type=int, default=CANDIDATE_REFRESH_SECONDS)
