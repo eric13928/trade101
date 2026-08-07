@@ -131,6 +131,11 @@ def compute_pole_analysis(ticker, reason, ctx):
     rsi = entry_signal.compute_rsi(bars["close"])
     rvol = entry_signal.fetch_volume_ratio(ticker, ctx)
 
+    name = ticker
+    ret, snap = ctx.get_market_snapshot([ticker])
+    if ret == RET_OK and snap is not None and not snap.empty:
+        name = snap.iloc[0].get("name") or ticker
+
     price = structure["current_price"]
     above_vwap = vwap is not None and price > vwap
     above_ema = price > ema
@@ -141,7 +146,7 @@ def compute_pole_analysis(ticker, reason, ctx):
 
     lines = [
         "\n" + "-" * 70,
-        f">>> POLE FORMED: {ticker} ({lean}) <<<",
+        f">>> POLE FORMED: {ticker} ({name}) ({lean}) <<<",
         f"  catalyst: {reason}",
         f"  as of {structure['current_time']}: price={price}  watch level (flag high)={structure['flag_high']}",
         f"  pole: {structure['pole_pct']}%  from ${structure['pole_low']} @ {structure['pole_low_time']}  "
